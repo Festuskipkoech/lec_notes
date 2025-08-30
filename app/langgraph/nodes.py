@@ -1,9 +1,10 @@
-
 from app.langgraph.state import GenerationState
 from app.utils.azure_openai import azure_client
 from app.database import SessionLocal
 from app.models.notes import Subtopic
 from sqlalchemy.sql import func
+import logging
+logger = logging.getLogger(__name__)
 
 class GenerationNodes:
     
@@ -11,7 +12,7 @@ class GenerationNodes:
     async def generate_content_node(state: GenerationState) -> GenerationState:
         """Generate content for current subtopic"""
         try:
-            print(f"Generating content for subtopic: {state.subtopic_titles[state.current_subtopic_index]}")
+            logger.info(f"[GENERATE] Starting generation for subtopic: {state.subtopic_titles[state.current_subtopic_index]}")
             current_index = state.current_subtopic_index
             subtopic_title = state.subtopic_titles[current_index]
             
@@ -36,62 +37,101 @@ class GenerationNodes:
                 upcoming_concepts=upcoming_concepts
             )
             
-            state.current_content = content
-            state.generated_content[current_index] = content
-            state.error_message = None
+            # Create new state instead of modifying existing
+            updated_state = state.dict()
+            updated_state['current_content'] = content
+            updated_state['generated_content'] = state.generated_content.copy()
+            updated_state['generated_content'][current_index] = content
+            updated_state['error_message'] = None
+            
+            # CRITICAL: Set action to None to end workflow after generation
+            updated_state['action'] = None  # This prevents infinite loops
+            
+            logger.info(f"[GENERATE] Content generated successfully, action set to None")
+            return GenerationState(**updated_state)
             
         except Exception as e:
-            import traceback
-            print(f"Content generation failed: {traceback.format_exc()}")
-            state.error_message = f"Generation failed: {str(e)}"
-        
-        return state
+            logger.error(f"[GENERATE] Content generation failed: {str(e)}")
+            updated_state = state.dict()
+            updated_state['error_message'] = f"Generation failed: {str(e)}"
+            updated_state['action'] = None  # End workflow on error
+            return GenerationState(**updated_state)
     
     @staticmethod
     async def edit_content_node(state: GenerationState) -> GenerationState:
         """Handle manual content editing"""
         try:
+            logger.info(f"[EDIT] Processing edit request")
+            updated_state = state.dict()
+            
             if state.edit_data and "content" in state.edit_data:
                 current_index = state.current_subtopic_index
-                state.current_content = state.edit_data["content"]
-                state.generated_content[current_index] = state.edit_data["content"]
+                updated_state['current_content'] = state.edit_data["content"]
+                
+                # Update generated content
+                updated_state['generated_content'] = state.generated_content.copy()
+                updated_state['generated_content'][current_index] = state.edit_data["content"]
                 
                 # Update subtopic title if provided
                 if "title" in state.edit_data:
-                    state.subtopic_titles[current_index] = state.edit_data["title"]
+                    updated_state['subtopic_titles'] = state.subtopic_titles.copy()
+                    updated_state['subtopic_titles'][current_index] = state.edit_data["title"]
                 
-                state.error_message = None
+                updated_state['error_message'] = None
+                logger.info(f"[EDIT] Content edited successfully")
             else:
-                state.error_message = "No edit data provided"
+                updated_state['error_message'] = "No edit data provided"
+                logger.warning(f"[EDIT] No edit data provided")
+            
+            # CRITICAL: Clear action to end workflow
+            updated_state['action'] = None
+            return GenerationState(**updated_state)
                 
         except Exception as e:
-            state.error_message = f"Edit failed: {str(e)}"
-        
-        return state
+            logger.error(f"[EDIT] Edit failed: {str(e)}")
+            updated_state = state.dict()
+            updated_state['error_message'] = f"Edit failed: {str(e)}"
+            updated_state['action'] = None
+            return GenerationState(**updated_state)
     
     @staticmethod
     async def consult_ai_node(state: GenerationState) -> GenerationState:
         """Get AI suggestions for improvements"""
         try:
+            print("🤖 NODE CALLED: consult_ai_node is executing!")
+
+            logger.info(f"[CONSULT] Processing AI consultation request")
+            updated_state = state.dict()
+            
             if state.consult_request and state.current_content:
                 suggestions = await azure_client.suggest_improvements(
                     content=state.current_content,
                     improvement_request=state.consult_request
                 )
-                state.ai_suggestions = suggestions
-                state.error_message = None
+                updated_state['ai_suggestions'] = suggestions
+                updated_state['error_message'] = None
+                logger.info(f"[CONSULT] Consultation request: '{state.consult_request}'")
+                logger.info(f"[CONSULT] Current content length: {len(state.current_content) if state.current_content else 0}")
             else:
-                state.error_message = "No consultation request or content provided"
+                updated_state['error_message'] = "No consultation request or content provided"
+                logger.warning(f"[CONSULT] Missing consultation request or content")
+            
+            # CRITICAL: Clear action to end workflow
+            updated_state['action'] = None
+            return GenerationState(**updated_state)
                 
         except Exception as e:
-            state.error_message = f"AI consultation failed: {str(e)}"
-        
-        return state
+            logger.error(f"[CONSULT] AI consultation failed: {str(e)}")
+            updated_state = state.dict()
+            updated_state['error_message'] = f"AI consultation failed: {str(e)}"
+            updated_state['action'] = None
+            return GenerationState(**updated_state)
     
     @staticmethod
     async def publish_subtopic_node(state: GenerationState) -> GenerationState:
         """Publish current subtopic to database"""
         try:
+            logger.info(f"[PUBLISH] Publishing subtopic {state.current_subtopic_index + 1}")
             db = SessionLocal()
             current_index = state.current_subtopic_index
             
@@ -120,22 +160,57 @@ class GenerationNodes:
             db.commit()
             db.close()
             
-            state.published_subtopics.append(current_index)
-            state.error_message = None
+            # Update state
+            updated_state = state.dict()
+            updated_state['published_subtopics'] = state.published_subtopics.copy()
+            updated_state['published_subtopics'].append(current_index)
+            updated_state['error_message'] = None
+            
+            # CRITICAL: Clear action to end workflow
+            updated_state['action'] = None
+            logger.info(f"[PUBLISH] Subtopic published successfully")
+            return GenerationState(**updated_state)
             
         except Exception as e:
-            state.error_message = f"Publishing failed: {str(e)}"
-        
-        return state
+            logger.error(f"[PUBLISH] Publishing failed: {str(e)}")
+            updated_state = state.dict()
+            updated_state['error_message'] = f"Publishing failed: {str(e)}"
+            updated_state['action'] = None
+            return GenerationState(**updated_state)
     
     @staticmethod
     async def next_subtopic_node(state: GenerationState) -> GenerationState:
-        """Move to next subtopic"""
-        if state.current_subtopic_index < state.total_subtopics - 1:
-            state.current_subtopic_index += 1
-            state.current_content = None
-            state.ai_suggestions = None
-            state.consult_request = None
-            state.edit_data = None
-        
-        return state
+        """Move to next subtopic - FIXED VERSION"""
+        try:
+            logger.info(f"[NEXT] Moving from subtopic {state.current_subtopic_index + 1} to next")
+            
+            # Create updated state
+            updated_state = state.dict()
+            
+            # Check if we can move to next subtopic
+            if state.current_subtopic_index < state.total_subtopics - 1:
+                # Move to next subtopic
+                updated_state['current_subtopic_index'] = state.current_subtopic_index + 1
+                updated_state['current_content'] = None
+                updated_state['ai_suggestions'] = None
+                updated_state['consult_request'] = None
+                updated_state['edit_data'] = None
+                updated_state['error_message'] = None
+                
+                # CRITICAL FIX: Set action to 'generate' to generate next subtopic content
+                updated_state['action'] = 'generate'
+                logger.info(f"[NEXT] Moved to subtopic {updated_state['current_subtopic_index'] + 1}, action set to 'generate'")
+                
+            else:
+                # All subtopics completed
+                updated_state['action'] = None  # End workflow
+                logger.info(f"[NEXT] All subtopics completed, ending workflow")
+            
+            return GenerationState(**updated_state)
+            
+        except Exception as e:
+            logger.error(f"[NEXT] Failed to move to next subtopic: {str(e)}")
+            updated_state = state.dict()
+            updated_state['error_message'] = f"Next subtopic failed: {str(e)}"
+            updated_state['action'] = None
+            return GenerationState(**updated_state)

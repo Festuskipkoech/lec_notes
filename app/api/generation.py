@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import Dict, Any
@@ -11,7 +10,8 @@ from app.schemas.generation import (
 from app.services.generation_service import generation_service
 from app.models.user import User
 from app.models.generation import GenerationSession as GenerationSessionModel
-
+import logging
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/generation", tags=["generation"])
 
 @router.post("/start")
@@ -31,6 +31,7 @@ async def start_generation(
         )
         return result
     except Exception as e:
+        logger.error(f"Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to start generation: {str(e)}"
@@ -46,11 +47,13 @@ async def begin_generation(
         result = await generation_service.begin_generation(db, session_id)
         return result
     except ValueError as e:
+        logger.error(f"Error {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e)
         )
     except Exception as e:
+        logger.error(f"Error {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to begin generation: {str(e)}"
@@ -66,39 +69,18 @@ async def generate_next_subtopic(
         result = await generation_service.generate_next_subtopic(db, session_id)
         return result
     except ValueError as e:
+        logger.error(f"Error {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e)
         )
     except Exception as e:
+        logger.error(f"Error {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate next subtopic: {str(e)}"
         )
-
-@router.put("/{session_id}/edit")
-async def edit_subtopic(
-    session_id: int,
-    request: EditSubtopicRequest,
-    db: Session = Depends(get_db)
-) -> Dict[str, Any]:
-    """Edit current subtopic content"""
-    try:
-        result = await generation_service.edit_subtopic(
-            db, session_id, request.title, request.content
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to edit subtopic: {str(e)}"
-        )
-
 @router.post("/{session_id}/ai-consult", response_model=AIConsultResponse)
 async def consult_ai(
     session_id: int,
@@ -117,22 +99,41 @@ async def consult_ai(
                 detail=result["error"]
             )
         
-        suggestions = result["suggestions"]
-        return AIConsultResponse(
-            suggestions=suggestions.get("suggestions", ""),
-            recommended_changes=suggestions.get("recommended_changes", [])
-        )
+        # Fix: Handle the case where suggestions might be None
+        suggestions = result.get("suggestions")
+        
+        if suggestions is None:
+            # Return empty response if no suggestions
+            return AIConsultResponse(
+                suggestions="",
+                recommended_changes=[]
+            )
+        
+        # Handle both dict and string responses from AI
+        if isinstance(suggestions, dict):
+            return AIConsultResponse(
+                suggestions=suggestions.get("suggestions", ""),
+                recommended_changes=suggestions.get("recommended_changes", [])
+            )
+        else:
+            # If suggestions is a string, put it in suggestions field
+            return AIConsultResponse(
+                suggestions=str(suggestions),
+                recommended_changes=[]
+            )
+            
     except ValueError as e:
+        logger.error(f"Error {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e)
         )
     except Exception as e:
+        logger.error(f"Error {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"AI consultation failed: {str(e)}"
         )
-
 @router.post("/{session_id}/publish")
 async def publish_subtopic(
     session_id: int,
@@ -143,11 +144,13 @@ async def publish_subtopic(
         result = await generation_service.publish_subtopic(db, session_id)
         return result
     except ValueError as e:
+        logger.error(f"Error {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e)
         )
     except Exception as e:
+        logger.error(f"Error {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to publish subtopic: {str(e)}"

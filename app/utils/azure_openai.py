@@ -74,7 +74,12 @@ class AzureOpenAIClient:
         
         return response.choices[0].message.content
     
+
     async def suggest_improvements(self, content: str, improvement_request: str) -> Dict[str, Any]:
+        print(f"🔮 DEBUG: [AZURE] suggest_improvements called")
+        print(f"🔮 DEBUG: [AZURE] Content length: {len(content)}")
+        print(f"🔮 DEBUG: [AZURE] Improvement request: '{improvement_request}'")
+        
         prompt = f"""
         Review this educational content and provide specific improvement suggestions:
         
@@ -89,19 +94,35 @@ class AzureOpenAIClient:
         Format your response as JSON with keys: "suggestions" and "recommended_changes"
         """
         
-        response = self.client.chat.completions.create(
-            model=settings.azure_openai_deployment_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5
-        )
-        
-        import json
         try:
-            return json.loads(response.choices[0].message.content)
-        except:
+            print(f"🔮 DEBUG: [AZURE] Making OpenAI API call...")
+            
+            response = self.client.chat.completions.create(
+                model=settings.azure_openai_deployment_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5
+            )
+            
+            raw_content = response.choices[0].message.content
+            print(f"🔮 DEBUG: [AZURE] Raw API response: {raw_content}")
+            
+            import json
+            try:
+                parsed_response = json.loads(raw_content)
+                print(f"🔮 DEBUG: [AZURE] Successfully parsed JSON: {parsed_response}")
+                return parsed_response
+            except json.JSONDecodeError as json_error:
+                print(f"🔮 DEBUG: [AZURE] JSON parsing failed: {json_error}")
+                print(f"🔮 DEBUG: [AZURE] Falling back to string response")
+                return {
+                    "suggestions": raw_content,
+                    "recommended_changes": ["Review the suggestions above"]
+                }
+        except Exception as api_error:
+            print(f"💥 DEBUG: [AZURE] API call failed: {api_error}")
             return {
-                "suggestions": response.choices[0].message.content,
-                "recommended_changes": ["Review the suggestions above"]
+                "suggestions": f"Error: {str(api_error)}",
+                "recommended_changes": []
             }
 
 azure_client = AzureOpenAIClient()
