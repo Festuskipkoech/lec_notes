@@ -45,37 +45,37 @@ class NotesGenerationWorkflow:
             """Enhanced routing with proper termination logic and debugging"""
             action = getattr(state, 'action', None)
             
-            print(f"🚦 DEBUG: [ROUTING] Entry point - action: '{action}'")
-            print(f"🚦 DEBUG: [ROUTING] Current subtopic: {getattr(state, 'current_subtopic_index', 'None')}/{getattr(state, 'total_subtopics', 'None')}")
+            print(f"[ROUTING] Entry point - action: '{action}'")
+            print(f"[ROUTING] Current subtopic: {getattr(state, 'current_subtopic_index', 'None')}/{getattr(state, 'total_subtopics', 'None')}")
             
             # Check for completion first
             if (hasattr(state, 'current_subtopic_index') and 
                 hasattr(state, 'total_subtopics') and
                 state.current_subtopic_index >= state.total_subtopics):
-                print("🚦 DEBUG: [ROUTING] All subtopics completed, ending workflow")
+                print("DEBUG: [ROUTING] All subtopics completed, ending workflow")
                 return END
             
             # Route based on action
             if action == "generate":
-                print("🚦 DEBUG: [ROUTING] Routing to 'generate'")
+                print("DEBUG: [ROUTING] Routing to 'generate'")
                 return "generate"
             elif action == "edit":
-                print("🚦 DEBUG: [ROUTING] Routing to 'edit'")
+                print("DEBUG: [ROUTING] Routing to 'edit'")
                 return "edit"
             elif action == "consult":
-                print("🚦 DEBUG: [ROUTING] Routing to 'consult' ⭐")
+                print("DEBUG: [ROUTING] Routing to 'consult'")
                 return "consult"
             elif action == "publish":
-                print("🚦 DEBUG: [ROUTING] Routing to 'publish'")
+                print("DEBUG: [ROUTING] Routing to 'publish'")
                 return "publish"
             elif action == "next":
-                print("🚦 DEBUG: [ROUTING] Routing to 'next'")
+                print("DEBUG: [ROUTING] Routing to 'next'")
                 return "next"
             elif action == "complete" or action is None:
-                print("🚦 DEBUG: [ROUTING] Ending workflow")
+                print("DEBUG: [ROUTING] Ending workflow")
                 return END
             else:
-                print(f"🚦 DEBUG: [ROUTING] Unknown action '{action}', ending workflow")
+                print(f"DEBUG: [ROUTING] Unknown action '{action}', ending workflow")
                 return END
         
         # All destinations for routing
@@ -96,12 +96,12 @@ class NotesGenerationWorkflow:
             workflow.add_edge(node_name, END)
         
         self._workflow_graph = workflow
-        print("🔧 DEBUG: Workflow built with router entry point")
+        print("DEBUG: Workflow built with router entry point")
 
     @staticmethod
     async def _router_node(state: GenerationState) -> GenerationState:
         """Router node that preserves the action for routing"""
-        print(f"🎯 DEBUG: [ROUTER] Received action: '{state.action}'")
+        print(f"DEBUG: [ROUTER] Received action: '{state.action}'")
         # Don't modify the state, just pass it through for routing
         return state
     async def _compile_workflow_if_needed(self):
@@ -135,8 +135,8 @@ class NotesGenerationWorkflow:
                     "recursion_limit": 50,
                 }
                                 
-                print(f"🔄 DEBUG: [WORKFLOW] Starting execution with initial action: '{state.action}'")
-                print(f"🔄 DEBUG: [WORKFLOW] Thread ID: {thread_id}")
+                print(f"DEBUG: [WORKFLOW] Starting execution with initial action: '{state.action}'")
+                print(f"DEBUG: [WORKFLOW] Thread ID: {thread_id}")
                 
                 logger.info(f"[WORKFLOW] Executing workflow for thread {thread_id}, attempt {retry_count + 1}")
                 logger.info(f"[WORKFLOW] Initial state action: '{state.action}'")
@@ -147,8 +147,8 @@ class NotesGenerationWorkflow:
                 logger.info(f"[WORKFLOW] Completed successfully for thread {thread_id}")
                 logger.info(f"[WORKFLOW] Final action: '{result.get('action', 'None')}'")
                                 
-                print(f"🏁 DEBUG: [WORKFLOW] Execution completed")
-                print(f"🏁 DEBUG: [WORKFLOW] Final result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
+                print(f"DEBUG: [WORKFLOW] Execution completed")
+                print(f"DEBUG: [WORKFLOW] Final result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
                 return GenerationState(**result)
                 
             except Exception as e:
@@ -209,7 +209,6 @@ class NotesGenerationWorkflow:
         
         logger.info("[START] Starting initial generation workflow")
         return await self.run_workflow(GenerationState(**initial_state), thread_id)
-
     async def continue_with_action(self, thread_id: str, action: str, **kwargs):
         """Continue workflow with specific action"""
         try:
@@ -217,19 +216,22 @@ class NotesGenerationWorkflow:
             config = {"configurable": {"thread_id": thread_id}}
             
             # Get current state
-            current_state = compiled_workflow.get_state(config)
+            current_state = await compiled_workflow.aget_state(config)
             if not current_state or not current_state.values:
                 raise Exception("No workflow state found for thread")
             
-            # Update state with new action
+            # CRITICAL: Preserve existing state and merge new data
             updated_values = current_state.values.copy()
             updated_values['action'] = action
             
-            # Add any additional data
+            # Add any additional data while preserving existing content
             for key, value in kwargs.items():
                 updated_values[key] = value
             
-            logger.info(f"[CONTINUE] Continuing workflow with action: '{action}'")
+            # DEBUG: Check what content exists in persisted state
+            logger.info(f"[CONTINUE] Generated content keys in persisted state: {list(updated_values.get('generated_content', {}).keys())}")
+            logger.info(f"[CONTINUE] Current content exists: {updated_values.get('current_content') is not None}")
+            
             result = await compiled_workflow.ainvoke(updated_values, config=config)
             
             return GenerationState(**result)
@@ -240,8 +242,3 @@ class NotesGenerationWorkflow:
 
 # Create global workflow instance
 notes_workflow = NotesGenerationWorkflow()
-
-# Debug helper
-def debug_node_action(node_name, input_action, output_action):
-    """Helper to debug node transitions"""
-    logger.info(f"[NODE-{node_name.upper()}] Input action: '{input_action}' -> Output action: '{output_action}'")

@@ -124,9 +124,9 @@ class GenerationService:
             total_subtopics=session.total_subtopics,
             action="next"  # This should move to next AND generate
         )
+        print("State:", state)
         
         try:
-            # FIXED: Single call instead of two calls
             result = await notes_workflow.run_workflow(state, session.thread_id)
             
             # Update session
@@ -180,7 +180,6 @@ class GenerationService:
             "error": result.error_message
         }
     
-
     @staticmethod
     async def consult_ai(
         db: Session, 
@@ -188,92 +187,26 @@ class GenerationService:
         improvement_request: str
     ) -> Dict[str, Any]:
         """Get AI suggestions for current subtopic"""
-        print(f"🔍 DEBUG: consult_ai called with session_id={session_id}, request='{improvement_request}'")
-        
         session = db.query(GenerationSession).filter(GenerationSession.id == session_id).first()
         if not session:
-            print(f"❌ DEBUG: Session {session_id} not found")
             raise ValueError("Generation session not found")
         
-        print(f"✅ DEBUG: Session found - current_subtopic={session.current_subtopic}, status={session.status}")
-        
-        topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
-        print(f"✅ DEBUG: Topic found - title='{topic.title}', level='{topic.level}'")
-        
-        state = GenerationState(
-            session_id=session.id,
-            topic_id=topic.id,
-            topic_title=topic.title,
-            topic_description=topic.description,
-            level=topic.level,
-            subtopic_titles=session.subtopic_titles,
-            current_subtopic_index=session.current_subtopic - 1,
-            total_subtopics=session.total_subtopics,
-            action="consult",
-            consult_request=improvement_request
-        )
-        
-        print(f"🚀 DEBUG: About to run workflow with action='consult'")
-        print(f"📝 DEBUG: State details - current_subtopic_index={state.current_subtopic_index}, consult_request='{state.consult_request}'")
-        
-        result = await notes_workflow.run_workflow(state, session.thread_id)
-        
-        print(f"🎯 DEBUG: Workflow returned - ai_suggestions type: {type(result.ai_suggestions)}")
-        print(f"🎯 DEBUG: ai_suggestions value: {result.ai_suggestions}")
-        print(f"🎯 DEBUG: error_message: {result.error_message}")
-        
-        return {
-            "suggestions": result.ai_suggestions,
-            "error": result.error_message
-        }
-
-    @staticmethod
-    async def consult_ai_node(state: GenerationState) -> GenerationState:
-        """Get AI suggestions for improvements"""
+        # Use continue_with_action instead of creating new state
         try:
-            print(f"🤖 DEBUG: [CONSULT] Starting AI consultation")
-            print(f"🤖 DEBUG: [CONSULT] Consult request: '{state.consult_request}'")
-            print(f"🤖 DEBUG: [CONSULT] Current content exists: {state.current_content is not None}")
-            print(f"🤖 DEBUG: [CONSULT] Current content length: {len(state.current_content) if state.current_content else 0}")
+            result = await notes_workflow.continue_with_action(
+                thread_id=session.thread_id,
+                action="consult",
+                consult_request=improvement_request
+            )
             
-            updated_state = state.dict()
+            return {
+                "suggestions": result.ai_suggestions,
+                "error": result.error_message
+            }
             
-            if state.consult_request and state.current_content:
-                print(f"🤖 DEBUG: [CONSULT] Calling azure_client.suggest_improvements")
-                
-                suggestions = await azure_client.suggest_improvements(
-                    content=state.current_content,
-                    improvement_request=state.consult_request
-                )
-                
-                print(f"🤖 DEBUG: [CONSULT] Azure client returned: {suggestions}")
-                print(f"🤖 DEBUG: [CONSULT] Suggestions type: {type(suggestions)}")
-                
-                updated_state['ai_suggestions'] = suggestions
-                updated_state['error_message'] = None
-                print(f"🤖 DEBUG: [CONSULT] AI suggestions set successfully")
-            else:
-                error_msg = "No consultation request or content provided"
-                print(f"❌ DEBUG: [CONSULT] {error_msg}")
-                print(f"❌ DEBUG: [CONSULT] consult_request exists: {bool(state.consult_request)}")
-                print(f"❌ DEBUG: [CONSULT] current_content exists: {bool(state.current_content)}")
-                updated_state['error_message'] = error_msg
-            
-            # CRITICAL: Clear action to end workflow
-            updated_state['action'] = None
-            print(f"🤖 DEBUG: [CONSULT] Workflow ending, action set to None")
-            return GenerationState(**updated_state)
-                
         except Exception as e:
-            print(f"💥 DEBUG: [CONSULT] Exception occurred: {str(e)}")
-            print(f"💥 DEBUG: [CONSULT] Exception type: {type(e)}")
-            import traceback
-            print(f"💥 DEBUG: [CONSULT] Traceback: {traceback.format_exc()}")
-            
-            updated_state = state.dict()
-            updated_state['error_message'] = f"AI consultation failed: {str(e)}"
-            updated_state['action'] = None
-            return GenerationState(**updated_state)
+            logger.error(f"Error in consult_ai: {e}")
+            raise Exception(f"Failed to consult AI: {str(e)}")
     @staticmethod
     async def publish_subtopic(db: Session, session_id: int) -> Dict[str, Any]:
         """Publish current subtopic"""
