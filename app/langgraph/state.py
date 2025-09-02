@@ -18,16 +18,20 @@ class GenerationState(BaseModel):
     generated_content: Dict[int, str] = {}  # subtopic_index -> content
     published_subtopics: List[int] = []
     
-    # Context for AI
     previous_concepts: List[str] = []
     upcoming_concepts: List[str] = []
     
-    # Workflow control
-    action: Optional[str] = None  # "generate", "edit", "consult", "publish", "next"
+    action: Optional[str] = None
     edit_data: Optional[Dict[str, Any]] = None
     consult_request: Optional[str] = None
     
-    # Results
     current_content: Optional[str] = None
     ai_suggestions: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+    
+    previous_subtopics_content: List[str] = []  # Full content from previous subtopics
+    key_concepts_extracted: List[str] = []     # Key concepts to reference
+    
+    conversation_initialized: bool = False
+    conversation_token_count: int = 0
+    last_conversation_message_id: Optional[int] = None

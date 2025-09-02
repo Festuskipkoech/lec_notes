@@ -23,6 +23,8 @@ class GenerationSession(Base):
     subtopic_titles = Column(JSON)  # Store planned subtopic titles
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    conversation_token_count = Column(Integer,default=0)
+    last_conversation_update = Column(DateTime(timezone=True), server_default=func.now())
     
     topic = relationship("Topic", back_populates="generation_sessions")
 
@@ -33,3 +35,14 @@ class LangGraphCheckpoint(Base):
     thread_id = Column(String, index=True)
     checkpoint_data = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+class ConversationMessage(Base):
+    __tablename__ = "conversation_message"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("generation_sessions.id"), nullable=False)
+    role = Column(String(20), nullable=False)
+    content = Column(Text, nullable=False)
+    subtopic_index = Column(Integer, nullable=True)
+    token_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True),server_default=func.now())

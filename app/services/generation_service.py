@@ -1,7 +1,9 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 from app.models.generation import GenerationSession, GenerationStatus
-from app.models.notes import Topic
+from app.services.conversation_service import conversation_service
+from app.models.notes import Topic,Subtopic
 from app.langgraph.workflow import notes_workflow
 from app.langgraph.state import GenerationState
 from app.utils.azure_openai import azure_client
@@ -11,6 +13,22 @@ logger = logging.getLogger(__name__)
 
 class GenerationService:
     
+    @staticmethod
+    def get_previous_subtopics_content(db: Session, topic_id: int, current_index: int) -> List[str]:
+        """Get content from previous subtopics for coherence"""
+        if current_index == 0:
+            return []
+        
+        # Get published subtopics before current index
+        previous_subtopics = db.query(Subtopic).filter(
+            Subtopic.topic_id == topic_id,
+            Subtopic.order <= current_index,  # Include current and before
+            Subtopic.is_published == True
+        ).order_by(Subtopic.order).all()
+        
+        # Return content from most recent ones (limit to avoid token issues)
+        contents = [subtopic.content for subtopic in previous_subtopics[-3:] if subtopic.content]
+        return contents
     @staticmethod
     async def start_generation(
         db: Session, 
@@ -57,17 +75,25 @@ class GenerationService:
             "subtopic_titles": subtopics,
             "total_subtopics": len(subtopics)
         }
-    
+
     @staticmethod
     async def begin_generation(db: Session, session_id: int) -> Dict[str, Any]:
-        """Begin actual content generation"""
+        """Begin actual content generation with coherence tracking"""
         session = db.query(GenerationSession).filter(GenerationSession.id == session_id).first()
         if not session:
             raise ValueError("Generation session not found")
         
         topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
         
-        # Initialize workflow state
+        # Get previous content (empty for first subtopic)
+        previous_contents = GenerationService.get_previous_subtopics_content(
+            db, topic.id, 0
+        )
+        
+        # Get upcoming concepts from next 2 subtopics
+        upcoming_concepts = session.subtopic_titles[1:3] if len(session.subtopic_titles) > 1 else []
+        
+        # Initialize workflow state with enhanced context
         state = GenerationState(
             session_id=session.id,
             topic_id=topic.id,
@@ -77,7 +103,9 @@ class GenerationService:
             subtopic_titles=session.subtopic_titles,
             current_subtopic_index=0,
             total_subtopics=session.total_subtopics,
-            action="generate"
+            action="generate",
+            previous_subtopics_content=previous_contents,  # ADD this
+            upcoming_concepts=upcoming_concepts  # ADD this
         )
         
         try:
@@ -85,8 +113,6 @@ class GenerationService:
         except Exception as workflow_error:
             logger.error(f"Workflow error: {workflow_error}")
             raise Exception(f"Workflow execution failed: {str(workflow_error)}")
-        
-        logger.info(f"Generation result: {result}")        
         
         # Update session status
         session.status = GenerationStatus.generating
@@ -100,19 +126,32 @@ class GenerationService:
             "total_subtopics": result.total_subtopics,
             "error": result.error_message
         }
-    
+
+
+
     @staticmethod
     async def generate_next_subtopic(db: Session, session_id: int) -> Dict[str, Any]:
-        """Generate next subtopic content - FIXED VERSION"""
+        """Generate next subtopic with previous content context"""
         session = db.query(GenerationSession).filter(GenerationSession.id == session_id).first()
         if not session:
             raise ValueError("Generation session not found")
         
-        # Get current state from workflow
         topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
+        current_index = session.current_subtopic - 1  # 0-based
+        next_index = current_index + 1
         
-        # FIXED: Single workflow call with "next" action that should handle both 
-        # moving to next subtopic AND generating content
+        if next_index >= session.total_subtopics:
+            raise ValueError("All subtopics have been generated")
+        
+        # Get previous subtopics content for coherence
+        previous_contents = GenerationService.get_previous_subtopics_content(
+            db, topic.id, next_index
+        )
+        
+        # Get upcoming concepts
+        upcoming_concepts = session.subtopic_titles[next_index + 1:next_index + 3] if next_index < len(session.subtopic_titles) - 1 else []
+        
+        # Create state with enhanced context
         state = GenerationState(
             session_id=session.id,
             topic_id=topic.id,
@@ -120,11 +159,12 @@ class GenerationService:
             topic_description=topic.description,
             level=topic.level,
             subtopic_titles=session.subtopic_titles,
-            current_subtopic_index=session.current_subtopic - 1,  # Current index (0-based)
+            current_subtopic_index=next_index,
             total_subtopics=session.total_subtopics,
-            action="next"  # This should move to next AND generate
+            action="next",
+            previous_subtopics_content=previous_contents,  # ADD this
+            upcoming_concepts=upcoming_concepts  # ADD this
         )
-        print("State:", state)
         
         try:
             result = await notes_workflow.run_workflow(state, session.thread_id)
@@ -144,7 +184,7 @@ class GenerationService:
         except Exception as e:
             logger.error(f"Error in generate_next_subtopic: {e}")
             raise Exception(f"Failed to generate next subtopic: {str(e)}")
-    
+  
     @staticmethod
     async def edit_subtopic(
         db: Session, 
@@ -152,12 +192,18 @@ class GenerationService:
         title: str, 
         content: str
     ) -> Dict[str, Any]:
-        """Edit current subtopic"""
+        """Edit current subtopic while maintaining coherence"""
         session = db.query(GenerationSession).filter(GenerationSession.id == session_id).first()
         if not session:
             raise ValueError("Generation session not found")
         
         topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
+        current_index = session.current_subtopic - 1
+        
+        # Get previous content for context validation
+        previous_contents = GenerationService.get_previous_subtopics_content(
+            db, topic.id, current_index
+        )
         
         state = GenerationState(
             session_id=session.id,
@@ -166,10 +212,11 @@ class GenerationService:
             topic_description=topic.description,
             level=topic.level,
             subtopic_titles=session.subtopic_titles,
-            current_subtopic_index=session.current_subtopic - 1,
+            current_subtopic_index=current_index,
             total_subtopics=session.total_subtopics,
             action="edit",
-            edit_data={"title": title, "content": content}
+            edit_data={"title": title, "content": content},
+            previous_subtopics_content=previous_contents  # ADD this
         )
         
         result = await notes_workflow.run_workflow(state, session.thread_id)
@@ -179,29 +226,37 @@ class GenerationService:
             "subtopic_title": result.subtopic_titles[result.current_subtopic_index] if result.subtopic_titles else "Unknown",
             "error": result.error_message
         }
-    
+
     @staticmethod
     async def consult_ai(
         db: Session, 
         session_id: int, 
         improvement_request: str
     ) -> Dict[str, Any]:
-        """Get AI suggestions for current subtopic"""
+        """Get AI suggestions within conversation context"""
         session = db.query(GenerationSession).filter(GenerationSession.id == session_id).first()
         if not session:
             raise ValueError("Generation session not found")
         
-        # Use continue_with_action instead of creating new state
+        # Get conversation history
+        conversation_history = conversation_service.get_conversation_history(db, session_id)
+        
         try:
-            result = await notes_workflow.continue_with_action(
-                thread_id=session.thread_id,
-                action="consult",
-                consult_request=improvement_request
+            suggestions = await azure_client.consult_in_conversation(
+                conversation_history, 
+                improvement_request
             )
             
+            # Store the consultation exchange in conversation
+            user_message = f"Consultation request: {improvement_request}"
+            conversation_service.add_message(db, session_id, "user", user_message)
+            
+            assistant_message = f"Consultation response: {suggestions}"
+            conversation_service.add_message(db, session_id, "assistant", str(assistant_message))
+            
             return {
-                "suggestions": result.ai_suggestions,
-                "error": result.error_message
+                "suggestions": suggestions,
+                "error": None
             }
             
         except Exception as e:

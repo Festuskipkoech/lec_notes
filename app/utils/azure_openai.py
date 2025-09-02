@@ -40,86 +40,194 @@ class AzureOpenAIClient:
         subtopics = [topic.split('.', 1)[-1].strip() for topic in subtopics]
         
         return subtopics
-    
+
+
     async def generate_subtopic_content(self, topic_title: str, subtopic_title: str, level: str, 
-                                      previous_concepts: List[str] = None, upcoming_concepts: List[str] = None) -> str:
-        context = ""
-        if previous_concepts:
-            context += f"Previously covered concepts: {', '.join(previous_concepts)}\n"
-        if upcoming_concepts:
-            context += f"Upcoming concepts: {', '.join(upcoming_concepts)}\n"
+                                    previous_subtopics_content: List[str] = None, 
+                                    upcoming_concepts: List[str] = None) -> str:
+        # Extract key concepts from previous subtopics
+        must_reference_concepts = []
+        if previous_subtopics_content:
+            must_reference_concepts = self._extract_key_concepts_from_content(previous_subtopics_content)
+        
+        # Build coherence requirements
+        coherence_requirements = self._build_coherence_requirements(
+            previous_subtopics_content, must_reference_concepts, upcoming_concepts
+        )
         
         prompt = f"""
-        Generate comprehensive educational notes for:
-        Topic: {topic_title}
-        Subtopic: {subtopic_title}
-        Education Level: {level}
-        
-        {context}
-        
-        Requirements:
-        - Create detailed, engaging content appropriate for {level}
-        - Include examples and explanations
-        - Build on previous concepts if mentioned
-        - Prepare for upcoming concepts if mentioned
-        - Use clear structure with headings and bullet points
-        - Length: 500-800 words
-        """
+    Generate comprehensive educational content for:
+    Topic: {topic_title}
+    Subtopic: {subtopic_title}
+    Education Level: {level}
+
+    {coherence_requirements}
+
+    MANDATORY STRUCTURE:
+    1. **Building on Previous Learning** (if this is not the first subtopic)
+    - Reference at least 2 specific concepts from earlier subtopics using EXACT terminology
+    - Begin with: "Building on our exploration of [specific previous concept]..."
+
+    2. **Core Content for {subtopic_title}**
+    - Detailed, engaging content appropriate for {level}
+    - Include examples and explanations
+    - Use consistent terminology established in previous subtopics
+
+    3. **Connections and Applications**
+    - Show explicit connections to previously covered material
+    - Use phrases like "As we learned when discussing..." or "This builds directly on the concept of..."
+
+    4. **Preparing for Future Learning**
+    - End with: "This foundation prepares us for understanding [next concept]..."
+    - Set up concepts for upcoming subtopics
+
+    Length: 600-900 words
+    """
         
         response = self.client.chat.completions.create(
             model=settings.azure_openai_deployment_name,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
+            temperature=0.6  # Slightly lower temperature for more consistency
+        )
+        
+        generated_content = response.choices[0].message.content
+        
+        # Second pass for coherence enhancement if we have previous content
+        if previous_subtopics_content:
+            enhanced_content = await self._enhance_coherence(
+                generated_content, previous_subtopics_content, must_reference_concepts
+            )
+            return enhanced_content
+        
+        return generated_content
+
+    # ADD these new helper methods:
+    def _extract_key_concepts_from_content(self, previous_contents: List[str]) -> List[str]:
+        """Extract key concepts that should be referenced"""
+        if not previous_contents:
+            return []
+        
+        # Take the most recent 2 subtopics for concept extraction
+        recent_content = "\n\n".join(previous_contents[-2:])
+        
+        extraction_prompt = f"""
+    Analyze this educational content and extract the 5-8 most important concepts, terms, or ideas that future subtopics should reference:
+
+    {recent_content[:2000]}  # Limit content to avoid token issues
+
+    Return ONLY a comma-separated list of key concepts/terms. No explanations.
+    Example: graph theory, nodes, edges, centrality measures, PageRank
+    """
+        
+        response = self.client.chat.completions.create(
+            model=settings.azure_openai_deployment_name,
+            messages=[{"role": "user", "content": extraction_prompt}],
+            temperature=0.3,
+            max_tokens=150
+        )
+        
+        concepts_text = response.choices[0].message.content.strip()
+        concepts = [concept.strip() for concept in concepts_text.split(",") if concept.strip()]
+        return concepts[:8]  # Limit to top 8 concepts
+
+    def _build_coherence_requirements(self, previous_contents: List[str], 
+                                    must_reference_concepts: List[str], 
+                                    upcoming_concepts: List[str]) -> str:
+        """Build specific coherence requirements for the prompt"""
+        if not previous_contents:
+            return "This is the first subtopic, so focus on establishing foundational concepts clearly."
+        
+        requirements = f"""
+    COHERENCE REQUIREMENTS - THESE ARE MANDATORY:
+    1. You MUST reference at least 2 of these concepts from previous subtopics: {', '.join(must_reference_concepts[:6])}
+    2. You MUST use the EXACT terminology from previous content (not synonyms)
+    3. You MUST start the main content with a connection to previous learning
+    4. You MUST include specific examples that build on earlier material
+
+    Previous context summary:
+    {self._summarize_previous_content(previous_contents)}
+    """
+        
+        if upcoming_concepts:
+            requirements += f"\n5. Prepare foundation for these upcoming concepts: {', '.join(upcoming_concepts)}"
+        
+        return requirements
+
+    def _summarize_previous_content(self, previous_contents: List[str]) -> str:
+        """Create a brief summary of previous content for context"""
+        if not previous_contents:
+            return ""
+        
+        # Take key points from recent subtopics
+        recent_content = "\n\n".join(previous_contents[-2:])[:1500]  # Limit length
+        
+        return f"Key points from recent subtopics:\n{recent_content}"
+
+    async def _enhance_coherence(self, generated_content: str, previous_contents: List[str], 
+                            key_concepts: List[str]) -> str:
+        """Second pass to enhance coherence and connections"""
+        
+        enhancement_prompt = f"""
+    Review and enhance this educational content to strengthen connections to previous learning:
+
+    GENERATED CONTENT:
+    {generated_content}
+
+    KEY CONCEPTS FROM PREVIOUS SUBTOPICS THAT SHOULD BE REFERENCED:
+    {', '.join(key_concepts)}
+
+    ENHANCEMENT REQUIREMENTS:
+    1. Add more specific references to previous concepts using exact terminology
+    2. Strengthen the connections between new content and what came before
+    3. Add phrases like "As we learned when discussing...", "Building on the concept of...", "This extends our understanding of..."
+    4. Ensure terminology consistency
+    5. Make the educational progression more explicit
+
+    Return the enhanced version that creates stronger coherence with previous learning.
+    """
+        
+        response = self.client.chat.completions.create(
+            model=settings.azure_openai_deployment_name,
+            messages=[{"role": "user", "content": enhancement_prompt}],
+            temperature=0.4,
+            max_tokens=1200
         )
         
         return response.choices[0].message.content
-    
+    async def consult_in_conversation(self, messages: List[Dict[str, str]], 
+                                    improvement_request: str) -> Dict[str, Any]:
+        """Get AI consultation within conversation context"""
+        
+        user_prompt = f"""Please review the content we just generated and provide specific improvement suggestions based on this request: {improvement_request}
 
-    async def suggest_improvements(self, content: str, improvement_request: str) -> Dict[str, Any]:
-        print(f"🔮 DEBUG: [AZURE] suggest_improvements called")
-        print(f"🔮 DEBUG: [AZURE] Content length: {len(content)}")
-        print(f"🔮 DEBUG: [AZURE] Improvement request: '{improvement_request}'")
+    Provide:
+    1. General suggestions for improvement
+    2. Specific recommended changes (as a list)
+
+    Format your response as JSON with keys: "suggestions" and "recommended_changes\""""
         
-        prompt = f"""
-        Review this educational content and provide specific improvement suggestions:
-        
-        Content: {content}
-        
-        Specific improvement request: {improvement_request}
-        
-        Provide:
-        1. General suggestions for improvement
-        2. Specific recommended changes (as a list)
-        
-        Format your response as JSON with keys: "suggestions" and "recommended_changes"
-        """
+        conversation_messages = messages + [{"role": "user", "content": user_prompt}]
         
         try:
-            print(f"🔮 DEBUG: [AZURE] Making OpenAI API call...")
-            
             response = self.client.chat.completions.create(
                 model=settings.azure_openai_deployment_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.5
+                messages=conversation_messages,
+                temperature=0.5,
+                max_tokens=800
             )
             
             raw_content = response.choices[0].message.content
-            print(f"🔮 DEBUG: [AZURE] Raw API response: {raw_content}")
             
             import json
             try:
                 parsed_response = json.loads(raw_content)
-                print(f"🔮 DEBUG: [AZURE] Successfully parsed JSON: {parsed_response}")
                 return parsed_response
-            except json.JSONDecodeError as json_error:
-                print(f"🔮 DEBUG: [AZURE] JSON parsing failed: {json_error}")
-                print(f"🔮 DEBUG: [AZURE] Falling back to string response")
+            except json.JSONDecodeError:
                 return {
                     "suggestions": raw_content,
                     "recommended_changes": ["Review the suggestions above"]
                 }
         except Exception as api_error:
-            print(f"💥 DEBUG: [AZURE] API call failed: {api_error}")
             return {
                 "suggestions": f"Error: {str(api_error)}",
                 "recommended_changes": []
