@@ -1,5 +1,4 @@
-from typing import Optional, Dict, Any, List
-from sqlalchemy import desc
+from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from app.models.generation import GenerationSession, GenerationStatus
 from app.models.notes import Topic, Subtopic

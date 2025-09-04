@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List
 from openai import AzureOpenAI
 from app.config import settings
 import asyncio
