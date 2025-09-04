@@ -34,3 +34,4 @@ class Subtopic(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     topic = relationship("Topic", back_populates="subtopics")
+    content_chunks = relationship("ContentChunk", back_populates="subtopic", cascade="all, delete-orphan")

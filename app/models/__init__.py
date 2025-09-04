@@ -1,4 +1,5 @@
 from app.models.user import User
+from app.models.content_chunks import ContentChunk
 
 # Now that all models are imported, we can set up the relationships
 from sqlalchemy.orm import relationship

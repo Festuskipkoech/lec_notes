@@ -1,37 +1,25 @@
-from typing import List, Dict, Any, Optional
+from typing import Optional
 from pydantic import BaseModel
 
 class GenerationState(BaseModel):
+    """
+    Simplified state that only tracks workflow position and actions.
+    All content is stored in database, all context comes from vector retrieval.
+    """
     # Core session info
     session_id: int
     topic_id: int
     topic_title: str
-    topic_description: str
     level: str
     
-    # Subtopic management
-    subtopic_titles: List[str]
+    # Subtopic management - just position tracking
+    subtopic_titles: list[str]
     current_subtopic_index: int
     total_subtopics: int
     
-    # Content tracking
-    generated_content: Dict[int, str] = {}  # subtopic_index -> content
-    published_subtopics: List[int] = []
-    
-    previous_concepts: List[str] = []
-    upcoming_concepts: List[str] = []
-    
+    # Workflow control
     action: Optional[str] = None
-    edit_data: Optional[Dict[str, Any]] = None
-    consult_request: Optional[str] = None
-    
-    current_content: Optional[str] = None
-    ai_suggestions: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     
-    previous_subtopics_content: List[str] = []  # Full content from previous subtopics
-    key_concepts_extracted: List[str] = []     # Key concepts to reference
-    
-    conversation_initialized: bool = False
-    conversation_token_count: int = 0
-    last_conversation_message_id: Optional[int] = None
+    # Edit data (only when editing)
+    edit_data: Optional[dict] = None

@@ -41,159 +41,65 @@ class AzureOpenAIClient:
         
         return subtopics
 
-
-    async def generate_subtopic_content(self, topic_title: str, subtopic_title: str, level: str, 
-                                    previous_subtopics_content: List[str] = None, 
-                                    upcoming_concepts: List[str] = None) -> str:
-        # Extract key concepts from previous subtopics
-        must_reference_concepts = []
-        if previous_subtopics_content:
-            must_reference_concepts = self._extract_key_concepts_from_content(previous_subtopics_content)
+    async def generate_subtopic_with_vector_context(self, topic_title: str, subtopic_title: str, 
+                                                   level: str, formatted_context: str, 
+                                                   upcoming_concepts: List[str] = None) -> str:
+        """
+        Generate high-quality educational content using vector-retrieved context.
+        This is our main content generation method with the integrated prompting approach.
+        """
         
-        # Build coherence requirements
-        coherence_requirements = self._build_coherence_requirements(
-            previous_subtopics_content, must_reference_concepts, upcoming_concepts
-        )
+        # System prompt - Educational framework & teaching philosophy
+        system_content = f"""You are a master educator creating a comprehensive course on "{topic_title}" for {level} learners.
+
+Your expertise:
+- Progressive concept building that flows naturally
+- Rich, memorable examples and applications  
+- Conceptual clarity without oversimplification
+- Consistent terminology throughout the course
+
+Your teaching philosophy:
+- Each concept builds naturally on established understanding
+- Use precise, consistent terminology 
+- Provide concrete examples before abstract concepts
+- Connect new ideas to previously covered foundations
+- Maintain student engagement through relevant applications"""
+
+        # Context injection + Generation prompt combined
+        upcoming_text = f"\nUpcoming concepts in this course: {', '.join(upcoming_concepts)}" if upcoming_concepts else ""
         
-        prompt = f"""
-    Generate comprehensive educational content for:
-    Topic: {topic_title}
-    Subtopic: {subtopic_title}
-    Education Level: {level}
+        user_content = f"""{formatted_context}
 
-    {coherence_requirements}
+{upcoming_text}
 
-    MANDATORY STRUCTURE:
-    1. **Building on Previous Learning** (if this is not the first subtopic)
-    - Reference at least 2 specific concepts from earlier subtopics using EXACT terminology
-    - Begin with: "Building on our exploration of [specific previous concept]..."
+CREATE COMPREHENSIVE EDUCATIONAL CONTENT FOR: {subtopic_title}
 
-    2. **Core Content for {subtopic_title}**
-    - Detailed, engaging content appropriate for {level}
-    - Include examples and explanations
-    - Use consistent terminology established in previous subtopics
+Content requirements:
+- 700-900 words of substantive, engaging material
+- Begin by naturally connecting to relevant previous concepts (don't force it)
+- Introduce new concepts with clear, memorable definitions
+- Include concrete, relatable examples that illustrate the concepts
+- Show practical applications where appropriate
+- Use consistent terminology established in previous lessons
+- Maintain logical flow that prepares students for upcoming concepts
 
-    3. **Connections and Applications**
-    - Show explicit connections to previously covered material
-    - Use phrases like "As we learned when discussing..." or "This builds directly on the concept of..."
+Structure your response with clear headings and smooth transitions between ideas."""
 
-    4. **Preparing for Future Learning**
-    - End with: "This foundation prepares us for understanding [next concept]..."
-    - Set up concepts for upcoming subtopics
-
-    Length: 600-900 words
-    """
-        
-        response = self.client.chat.completions.create(
-            model=settings.azure_openai_deployment_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.6  # Slightly lower temperature for more consistency
-        )
-        
-        generated_content = response.choices[0].message.content
-        
-        # Second pass for coherence enhancement if we have previous content
-        if previous_subtopics_content:
-            enhanced_content = await self._enhance_coherence(
-                generated_content, previous_subtopics_content, must_reference_concepts
-            )
-            return enhanced_content
-        
-        return generated_content
-
-    # ADD these new helper methods:
-    def _extract_key_concepts_from_content(self, previous_contents: List[str]) -> List[str]:
-        """Extract key concepts that should be referenced"""
-        if not previous_contents:
-            return []
-        
-        # Take the most recent 2 subtopics for concept extraction
-        recent_content = "\n\n".join(previous_contents[-2:])
-        
-        extraction_prompt = f"""
-    Analyze this educational content and extract the 5-8 most important concepts, terms, or ideas that future subtopics should reference:
-
-    {recent_content[:2000]}  # Limit content to avoid token issues
-
-    Return ONLY a comma-separated list of key concepts/terms. No explanations.
-    Example: graph theory, nodes, edges, centrality measures, PageRank
-    """
+        # Combined messages for integrated prompt approach
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content}
+        ]
         
         response = self.client.chat.completions.create(
             model=settings.azure_openai_deployment_name,
-            messages=[{"role": "user", "content": extraction_prompt}],
-            temperature=0.3,
-            max_tokens=150
-        )
-        
-        concepts_text = response.choices[0].message.content.strip()
-        concepts = [concept.strip() for concept in concepts_text.split(",") if concept.strip()]
-        return concepts[:8]  # Limit to top 8 concepts
-
-    def _build_coherence_requirements(self, previous_contents: List[str], 
-                                    must_reference_concepts: List[str], 
-                                    upcoming_concepts: List[str]) -> str:
-        """Build specific coherence requirements for the prompt"""
-        if not previous_contents:
-            return "This is the first subtopic, so focus on establishing foundational concepts clearly."
-        
-        requirements = f"""
-    COHERENCE REQUIREMENTS - THESE ARE MANDATORY:
-    1. You MUST reference at least 2 of these concepts from previous subtopics: {', '.join(must_reference_concepts[:6])}
-    2. You MUST use the EXACT terminology from previous content (not synonyms)
-    3. You MUST start the main content with a connection to previous learning
-    4. You MUST include specific examples that build on earlier material
-
-    Previous context summary:
-    {self._summarize_previous_content(previous_contents)}
-    """
-        
-        if upcoming_concepts:
-            requirements += f"\n5. Prepare foundation for these upcoming concepts: {', '.join(upcoming_concepts)}"
-        
-        return requirements
-
-    def _summarize_previous_content(self, previous_contents: List[str]) -> str:
-        """Create a brief summary of previous content for context"""
-        if not previous_contents:
-            return ""
-        
-        # Take key points from recent subtopics
-        recent_content = "\n\n".join(previous_contents[-2:])[:1500]  # Limit length
-        
-        return f"Key points from recent subtopics:\n{recent_content}"
-
-    async def _enhance_coherence(self, generated_content: str, previous_contents: List[str], 
-                            key_concepts: List[str]) -> str:
-        """Second pass to enhance coherence and connections"""
-        
-        enhancement_prompt = f"""
-    Review and enhance this educational content to strengthen connections to previous learning:
-
-    GENERATED CONTENT:
-    {generated_content}
-
-    KEY CONCEPTS FROM PREVIOUS SUBTOPICS THAT SHOULD BE REFERENCED:
-    {', '.join(key_concepts)}
-
-    ENHANCEMENT REQUIREMENTS:
-    1. Add more specific references to previous concepts using exact terminology
-    2. Strengthen the connections between new content and what came before
-    3. Add phrases like "As we learned when discussing...", "Building on the concept of...", "This extends our understanding of..."
-    4. Ensure terminology consistency
-    5. Make the educational progression more explicit
-
-    Return the enhanced version that creates stronger coherence with previous learning.
-    """
-        
-        response = self.client.chat.completions.create(
-            model=settings.azure_openai_deployment_name,
-            messages=[{"role": "user", "content": enhancement_prompt}],
-            temperature=0.4,
-            max_tokens=1200
+            messages=messages,
+            temperature=0.6,  # Balanced creativity and consistency
+            max_tokens=1200   # Ensure we get full, comprehensive content
         )
         
         return response.choices[0].message.content
+
     async def consult_in_conversation(self, messages: List[Dict[str, str]], 
                                     improvement_request: str) -> Dict[str, Any]:
         """Get AI consultation within conversation context"""

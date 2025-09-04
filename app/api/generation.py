@@ -194,3 +194,27 @@ async def cancel_generation(
     db.commit()
     
     return {"message": "Generation session cancelled"}
+
+@router.get("/{session_id}/analytics")
+async def get_content_analytics(
+    session_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get content quality analytics and vector coverage analysis"""
+    session = db.query(GenerationSessionModel).filter(
+        GenerationSessionModel.id == session_id
+    ).first()
+    
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Generation session not found"
+        )
+    
+    analytics = await generation_service.get_content_analytics(db, session.topic_id)
+    
+    return {
+        "session_id": session_id,
+        "topic_id": session.topic_id,
+        "analytics": analytics
+    }
