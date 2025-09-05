@@ -1,4 +1,5 @@
 from typing import Optional, Dict, Any
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.models.generation import GenerationSession, GenerationStatus
 from app.models.notes import Topic, Subtopic
@@ -47,7 +48,8 @@ class GenerationService:
             thread_id=thread_id,
             total_subtopics=len(subtopics),
             subtopic_titles=subtopics,
-            status=GenerationStatus.planning
+            status=GenerationStatus.planning,
+            current_subtopic=0  # Start at 0 - no subtopics generated yet
         )
         db.add(session)
         db.commit()
@@ -64,23 +66,23 @@ class GenerationService:
 
     @staticmethod
     async def begin_generation(db: Session, session_id: int) -> Dict[str, Any]:
-        """Begin content generation with vector-enhanced workflow"""
+        """Begin content generation with vector-enhanced workflow - generates first subtopic"""
         session = db.query(GenerationSession).filter(GenerationSession.id == session_id).first()
         if not session:
             raise ValueError("Generation session not found")
         
         topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
         
-        # Initialize simplified workflow state
+        # Initialize workflow state for first subtopic (index 0)
         state = GenerationState(
             session_id=session.id,
             topic_id=topic.id,
             topic_title=topic.title,
             level=topic.level,
             subtopic_titles=session.subtopic_titles,
-            current_subtopic_index=0,
+            current_subtopic_index=0,  # Start with first subtopic
             total_subtopics=session.total_subtopics,
-            action="generate"
+            action="generate"  # Generate the first subtopic
         )
         
         try:
@@ -89,15 +91,15 @@ class GenerationService:
             logger.error(f"Workflow error: {workflow_error}")
             raise Exception(f"Workflow execution failed: {str(workflow_error)}")
         
-        # Update session status
+        # Update session status - first subtopic is now generated
         session.status = GenerationStatus.generating
-        session.current_subtopic = 1
+        session.current_subtopic = 1  # We've generated subtopic 1 (index 0)
         db.commit()
         
         # Get generated content from database
         generated_subtopic = db.query(Subtopic).filter(
             Subtopic.topic_id == topic.id,
-            Subtopic.order == 1
+            Subtopic.order == 1  # First subtopic in database
         ).first()
         
         logger.info(f"[BEGIN] First subtopic generated for session {session_id}")
@@ -112,53 +114,70 @@ class GenerationService:
 
     @staticmethod
     async def generate_next_subtopic(db: Session, session_id: int) -> Dict[str, Any]:
-        """Generate next subtopic with vector-enhanced context"""
+        """Generate next subtopic - two-step process: move index, then generate"""
         session = db.query(GenerationSession).filter(GenerationSession.id == session_id).first()
         if not session:
             raise ValueError("Generation session not found")
         
         topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
-        current_index = session.current_subtopic - 1  # Convert to 0-based
-        next_index = current_index + 1
         
-        logger.info(f"[NEXT] Session {session_id}: current_subtopic={session.current_subtopic}, moving from index {current_index} to {next_index}")
+        # Convert current_subtopic (1-based) to array index (0-based)
+        current_completed_index = session.current_subtopic - 1  # Last completed subtopic index
+        next_index = current_completed_index + 1  # Next subtopic to generate
+        
+        logger.info(f"[NEXT] Session {session_id}: current_subtopic={session.current_subtopic} (completed), generating index {next_index}")
         
         if next_index >= session.total_subtopics:
             raise ValueError("All subtopics have been generated")
         
-        # Create state for next subtopic with proper topic info
-        state = GenerationState(
+        # Step 1: Move to next subtopic position
+        state_for_next = GenerationState(
             session_id=session.id,
             topic_id=session.topic_id,
             topic_title=topic.title,
             level=topic.level,
             subtopic_titles=session.subtopic_titles,
-            current_subtopic_index=next_index,
+            current_subtopic_index=current_completed_index,  # Current position
             total_subtopics=session.total_subtopics,
-            action="next"
+            action="next"  # Move to next position
         )
         
         try:
-            result = await notes_workflow.run_workflow(state, session.thread_id)
+            # Move to next position
+            result_next = await notes_workflow.run_workflow(state_for_next, session.thread_id)
             
-            # Update session
-            session.current_subtopic = result.current_subtopic_index + 1
+            # Step 2: Generate content for the new position
+            state_for_generate = GenerationState(
+                session_id=session.id,
+                topic_id=session.topic_id,
+                topic_title=topic.title,
+                level=topic.level,
+                subtopic_titles=session.subtopic_titles,
+                current_subtopic_index=result_next.current_subtopic_index,  # New position
+                total_subtopics=session.total_subtopics,
+                action="generate"  # Generate content
+            )
+            
+            result_generate = await notes_workflow.run_workflow(state_for_generate, session.thread_id)
+            
+            # Update session - increment current_subtopic count
+            session.current_subtopic = result_generate.current_subtopic_index + 1
             db.commit()
             
             # Get generated content from database
             generated_subtopic = db.query(Subtopic).filter(
                 Subtopic.topic_id == session.topic_id,
-                Subtopic.order == result.current_subtopic_index + 1
+                Subtopic.order == result_generate.current_subtopic_index + 1
             ).first()
             
-            logger.info(f"[NEXT] Generated subtopic {result.current_subtopic_index + 1} for session {session_id}")
+            logger.info(f"[NEXT] Generated subtopic {result_generate.current_subtopic_index + 1} for session {session_id}")
             
             return {
                 "content": generated_subtopic.content if generated_subtopic else "Content generation in progress...",
-                "subtopic_title": result.subtopic_titles[result.current_subtopic_index] if result.subtopic_titles else "Unknown",
-                "current_subtopic": result.current_subtopic_index + 1,
-                "total_subtopics": result.total_subtopics,
-                "error": result.error_message
+                "subtopic_title": result_generate.subtopic_titles[result_generate.current_subtopic_index] if result_generate.subtopic_titles else "Unknown",
+                "current_subtopic": result_generate.current_subtopic_index + 1,
+                "total_subtopics": result_generate.total_subtopics,
+                "error": result_generate.error_message
             }
             
         except Exception as e:
@@ -178,7 +197,7 @@ class GenerationService:
             raise ValueError("Generation session not found")
         
         topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
-        current_index = session.current_subtopic - 1
+        current_index = session.current_subtopic - 1  # Convert to 0-based
         
         state = GenerationState(
             session_id=session.id,
@@ -268,7 +287,7 @@ class GenerationService:
             topic_title=topic.title,
             level=topic.level,
             subtopic_titles=session.subtopic_titles,
-            current_subtopic_index=session.current_subtopic - 1,
+            current_subtopic_index=session.current_subtopic - 1,  # Convert to 0-based
             total_subtopics=session.total_subtopics,
             action="publish"
         )
@@ -333,6 +352,68 @@ class GenerationService:
             return {
                 "error": f"Failed to get analytics: {str(e)}"
             }
+
+    @staticmethod
+    async def edit_subtopic_content(
+        db: Session,
+        session_id: int,
+        title: str,
+        content: str
+    ) -> Dict[str, Any]:
+        """
+        Edit current subtopic content - direct database replacement (no workflow)
+        This is for admin content editing before publishing
+        """
+        try:
+            # Get session
+            session = db.query(GenerationSession).filter(GenerationSession.id == session_id).first()
+            if not session:
+                raise ValueError("Generation session not found")
+            
+            # Find the current subtopic to edit
+            current_subtopic = db.query(Subtopic).filter(
+                Subtopic.topic_id == session.topic_id,
+                Subtopic.order == session.current_subtopic
+            ).first()
+            
+            if not current_subtopic:
+                raise ValueError("No current subtopic found to edit")
+            
+            logger.info(f"[EDIT_CONTENT] Editing subtopic {session.current_subtopic} for session {session_id}")
+            
+            # Update the subtopic content directly
+            current_subtopic.title = title
+            current_subtopic.content = content
+            current_subtopic.updated_at = func.now()
+            
+            # Re-process vector embeddings - delete old chunks first
+            from app.models.content_chunks import ContentChunk
+            db.query(ContentChunk).filter(
+                ContentChunk.subtopic_id == current_subtopic.id
+            ).delete()
+            
+            # Re-chunk and re-embed the new content
+            from app.services.chunking_service import chunking_service
+            chunks = chunking_service.chunk_content(content, title)
+            await vector_service.store_content_chunks(db, current_subtopic.id, chunks)
+            
+            db.commit()
+            
+            logger.info(f"[EDIT_CONTENT] Successfully updated subtopic {session.current_subtopic} with {len(chunks)} new chunks")
+            
+            return {
+                "success": True,
+                "message": "Subtopic content updated successfully",
+                "subtopic_title": title,
+                "content_length": len(content),
+                "chunks_created": len(chunks),
+                "current_subtopic": session.current_subtopic,
+                "total_subtopics": session.total_subtopics
+            }
+            
+        except Exception as e:
+            logger.error(f"[EDIT_CONTENT] Failed to edit subtopic content: {str(e)}")
+            raise Exception(f"Failed to edit subtopic content: {str(e)}")
 
     @staticmethod
     async def get_session_content(db: Session, session_id: int) -> Dict[str, Any]:

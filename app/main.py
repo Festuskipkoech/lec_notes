@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import engine,Base
+from app.database import engine, Base
+from app.init_admin import create_admin
 
 from app.api import auth, generation as generation_api, notes as notes_api
 
@@ -9,6 +10,9 @@ from app.models import *
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+# Create admin user
+create_admin()
 
 app = FastAPI(
     title="Notes Generation API",

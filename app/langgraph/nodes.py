@@ -23,7 +23,7 @@ class GenerationNodes:
             current_index = state.current_subtopic_index
             subtopic_title = state.subtopic_titles[current_index]
             
-            logger.info(f"[GENERATE] Starting vector-enhanced generation for: {subtopic_title}")
+            logger.info(f"[GENERATE] Starting vector-enhanced generation for subtopic {current_index + 1}: {subtopic_title}")
             
             # Build query for finding relevant context - this is key for quality
             query_text = f"{state.topic_title} {subtopic_title}"
@@ -65,7 +65,7 @@ class GenerationNodes:
             await vector_service.store_content_chunks(db, subtopic_record.id, chunks)
             
             db.close()
-            logger.info(f"[GENERATE] Successfully generated and stored content with {len(chunks)} chunks")
+            logger.info(f"[GENERATE] Successfully generated and stored subtopic {current_index + 1} with {len(chunks)} chunks")
             
             # Return clean state - no content storage in state
             updated_state = state.dict()
@@ -204,10 +204,9 @@ class GenerationNodes:
             updated_state['action'] = None
             return GenerationState(**updated_state)
     
-
     @staticmethod
     async def next_subtopic_node(state: GenerationState) -> GenerationState:
-        """Move to next subtopic and generate content immediately"""
+        """Move to next subtopic - ONLY increment index, don't generate content"""
         try:
             current_index = state.current_subtopic_index
             
@@ -217,67 +216,25 @@ class GenerationNodes:
                 updated_state['action'] = None
                 return GenerationState(**updated_state)
             
-            # Move to next subtopic
+            # ONLY move to next subtopic - don't generate content here
             new_index = current_index + 1
-            logger.info(f"[NEXT] Moving to and generating subtopic {new_index + 1}")
+            logger.info(f"[NEXT] Moving from subtopic {current_index + 1} to {new_index + 1}")
             
-            # Generate content for the new subtopic immediately
-            db = SessionLocal()
-            subtopic_title = state.subtopic_titles[new_index]
-            
-            # Build query for finding relevant context
-            query_text = f"{state.topic_title} {subtopic_title}"
-            
-            # Get semantically relevant chunks from previous subtopics
-            relevant_chunks = await vector_service.find_relevant_context(
-                db, state.topic_id, query_text, new_index, limit=7
-            )
-            
-            # Get previous subtopic for natural flow continuity
-            previous_content = await vector_service.get_previous_subtopic_content(
-                db, state.topic_id, new_index
-            )
-            
-            # Format context for generation prompt
-            formatted_context = vector_service.format_context_for_generation(
-                relevant_chunks, previous_content
-            )
-            
-            # Get upcoming concepts for forward-looking content
-            upcoming_concepts = state.subtopic_titles[new_index + 1:new_index + 3]
-            
-            # Generate with integrated prompt approach
-            content = await azure_client.generate_subtopic_with_vector_context(
-                topic_title=state.topic_title,
-                subtopic_title=subtopic_title,
-                level=state.level,
-                formatted_context=formatted_context,
-                upcoming_concepts=upcoming_concepts
-            )
-            
-            # Store content in database immediately
-            subtopic_record = await GenerationNodes._store_generated_content(
-                db, state.topic_id, new_index, subtopic_title, content
-            )
-            
-            # Chunk the content and store with embeddings for future context retrieval
-            chunks = chunking_service.chunk_content(content, subtopic_title)
-            await vector_service.store_content_chunks(db, subtopic_record.id, chunks)
-            
-            db.close()
-            logger.info(f"[NEXT] Successfully generated and stored subtopic {new_index + 1} with {len(chunks)} chunks")
-            
-            # Update state with new position
+            # Update state with new position ONLY
             updated_state = state.dict()
             updated_state['current_subtopic_index'] = new_index
             updated_state['error_message'] = None
             updated_state['edit_data'] = None
-            updated_state['action'] = None  # End workflow
+            updated_state['action'] = None  # End workflow here
             
             return GenerationState(**updated_state)
+            
         except Exception as e:
-            logger.error(f"Error moving to next subtopic {str(e)}")
-            return
+            logger.error(f"[NEXT] Error moving to next subtopic: {str(e)}")
+            updated_state = state.dict()
+            updated_state['error_message'] = f"Failed to move to next subtopic: {str(e)}"
+            updated_state['action'] = None
+            return GenerationState(**updated_state)
 
     @staticmethod
     async def consult_ai_node(state: GenerationState) -> GenerationState:

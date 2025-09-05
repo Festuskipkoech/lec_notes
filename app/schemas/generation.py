@@ -29,5 +29,11 @@ class AIConsultResponse(BaseModel):
     recommended_changes: List[str]
 
 class EditSubtopicRequest(BaseModel):
+    """For workflow-based editing (existing functionality)"""
+    title: str
+    content: str
+
+class EditContentRequest(BaseModel):
+    """For direct content replacement editing (new functionality)"""
     title: str
     content: str

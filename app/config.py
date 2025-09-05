@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     azure_openai_api_key: str
     azure_openai_api_version: str
     azure_openai_deployment_name: str
-    azure_openai_embedding_deployment_name: str  
+    azure_openai_embedding_deployment_name: str
+    admin_email: str 
+    admin_password: str
     
     class Config:
         env_file = ".env"

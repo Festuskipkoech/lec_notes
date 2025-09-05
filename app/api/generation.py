@@ -5,7 +5,7 @@ from app.database import get_db
 from app.dependencies import get_current_admin
 from app.schemas.generation import (
     GenerationStart, GenerationSession, AIConsultRequest, 
-    AIConsultResponse, EditSubtopicRequest
+    AIConsultResponse, EditSubtopicRequest, EditContentRequest
 )
 from app.services.generation_service import generation_service
 from app.models.user import User
@@ -81,47 +81,22 @@ async def generate_next_subtopic(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate next subtopic: {str(e)}"
         )
-@router.post("/{session_id}/ai-consult", response_model=AIConsultResponse)
-async def consult_ai(
+
+@router.put("/{session_id}/edit")
+async def edit_subtopic_content(
     session_id: int,
-    request: AIConsultRequest,
+    request: EditContentRequest,
     db: Session = Depends(get_db)
-):
-    """Get AI suggestions for improving current subtopic"""
+) -> Dict[str, Any]:
+    """Edit current subtopic content - replaces existing content completely"""
     try:
-        result = await generation_service.consult_ai(
-            db, session_id, request.improvement_request
+        result = await generation_service.edit_subtopic_content(
+            db=db,
+            session_id=session_id,
+            title=request.title,
+            content=request.content
         )
-        
-        if result["error"]:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=result["error"]
-            )
-        
-        # Fix: Handle the case where suggestions might be None
-        suggestions = result.get("suggestions")
-        
-        if suggestions is None:
-            # Return empty response if no suggestions
-            return AIConsultResponse(
-                suggestions="",
-                recommended_changes=[]
-            )
-        
-        # Handle both dict and string responses from AI
-        if isinstance(suggestions, dict):
-            return AIConsultResponse(
-                suggestions=suggestions.get("suggestions", ""),
-                recommended_changes=suggestions.get("recommended_changes", [])
-            )
-        else:
-            # If suggestions is a string, put it in suggestions field
-            return AIConsultResponse(
-                suggestions=str(suggestions),
-                recommended_changes=[]
-            )
-            
+        return result
     except ValueError as e:
         logger.error(f"Error {str(e)}")
         raise HTTPException(
@@ -132,8 +107,64 @@ async def consult_ai(
         logger.error(f"Error {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"AI consultation failed: {str(e)}"
+            detail=f"Failed to edit subtopic content: {str(e)}"
         )
+
+# AI-Consult endpoint - SUSPENDED (temporarily disabled)
+# @router.post("/{session_id}/ai-consult", response_model=AIConsultResponse)
+# async def consult_ai(
+#     session_id: int,
+#     request: AIConsultRequest,
+#     db: Session = Depends(get_db)
+# ):
+#     """Get AI suggestions for improving current subtopic"""
+#     try:
+#         result = await generation_service.consult_ai(
+#             db, session_id, request.improvement_request
+#         )
+        
+#         if result["error"]:
+#             raise HTTPException(
+#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#                 detail=result["error"]
+#             )
+        
+#         # Fix: Handle the case where suggestions might be None
+#         suggestions = result.get("suggestions")
+        
+#         if suggestions is None:
+#             # Return empty response if no suggestions
+#             return AIConsultResponse(
+#                 suggestions="",
+#                 recommended_changes=[]
+#             )
+        
+#         # Handle both dict and string responses from AI
+#         if isinstance(suggestions, dict):
+#             return AIConsultResponse(
+#                 suggestions=suggestions.get("suggestions", ""),
+#                 recommended_changes=suggestions.get("recommended_changes", [])
+#             )
+#         else:
+#             # If suggestions is a string, put it in suggestions field
+#             return AIConsultResponse(
+#                 suggestions=str(suggestions),
+#                 recommended_changes=[]
+#             )
+            
+#     except ValueError as e:
+#         logger.error(f"Error {str(e)}")
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail=str(e)
+#         )
+#     except Exception as e:
+#         logger.error(f"Error {str(e)}")
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"AI consultation failed: {str(e)}"
+#         )
+
 @router.post("/{session_id}/publish")
 async def publish_subtopic(
     session_id: int,
