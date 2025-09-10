@@ -18,4 +18,5 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # topics = relationship("Topic", back_populates="creator")
+    # Define relationship without back_populates to avoid circular issues
+    topics = relationship("Topic")

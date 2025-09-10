@@ -1,5 +1,4 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
-from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
 from pgvector.sqlalchemy import Vector
@@ -20,5 +19,4 @@ class ContentChunk(Base):
     token_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Relationship back to subtopic
-    subtopic = relationship("Subtopic", back_populates="content_chunks")
+    # Remove relationship to avoid circular dependency

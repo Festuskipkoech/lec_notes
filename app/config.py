@@ -1,6 +1,17 @@
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
+import os
+from pathlib import Path
+
+# Get the directory where config.py is located
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(
+        env_file=str(BASE_DIR / ".env"), 
+        env_file_encoding='utf-8'
+    )
+    
     database_url: str
     secret_key: str
     algorithm: str = "HS256"
@@ -12,8 +23,7 @@ class Settings(BaseSettings):
     azure_openai_embedding_deployment_name: str
     admin_email: str 
     admin_password: str
-    
-    class Config:
-        env_file = ".env"
-        
+    azure_search_key: str
+    azure_search_endpoint: str
+
 settings = Settings()

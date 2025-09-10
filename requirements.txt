@@ -21,3 +21,7 @@ requests
 httpx
 numpy
 tiktoken
+azure-search-documents
+azure-core
+numpy
+mem0ai

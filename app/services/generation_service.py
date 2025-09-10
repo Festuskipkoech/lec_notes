@@ -3,6 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.models.generation import GenerationSession, GenerationStatus
 from app.models.notes import Topic, Subtopic
+from app.models.content_chunks import ContentChunk
 from app.langgraph.workflow import notes_workflow
 from app.langgraph.state import GenerationState
 from app.utils.azure_openai import azure_client

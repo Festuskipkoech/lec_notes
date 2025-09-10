@@ -1,5 +1,4 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON
-from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
 import enum
@@ -26,7 +25,7 @@ class GenerationSession(Base):
     conversation_token_count = Column(Integer,default=0)
     last_conversation_update = Column(DateTime(timezone=True), server_default=func.now())
     
-    topic = relationship("Topic", back_populates="generation_sessions")
+    # Remove relationship to avoid circular dependency
 
 class LangGraphCheckpoint(Base):
     __tablename__ = "langgraph_checkpoints"

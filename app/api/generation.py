@@ -4,8 +4,7 @@ from typing import Dict, Any
 from app.database import get_db
 from app.dependencies import get_current_admin
 from app.schemas.generation import (
-    GenerationStart, GenerationSession, AIConsultRequest, 
-    AIConsultResponse, EditSubtopicRequest, EditContentRequest
+    GenerationStart, GenerationSession, EditContentRequest
 )
 from app.services.generation_service import generation_service
 from app.models.user import User

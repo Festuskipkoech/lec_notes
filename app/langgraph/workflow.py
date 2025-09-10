@@ -147,7 +147,7 @@ class NotesGenerationWorkflow:
                 logger.info(f"[WORKFLOW] Completed successfully for thread {thread_id}")
                 logger.info(f"[WORKFLOW] Final action: '{result.get('action', 'None')}'")
                                 
-                print(f"DEBUG: [WORKFLOW] Execution completed")
+                print("DEBUG: [WORKFLOW] Execution completed")
                 print(f"DEBUG: [WORKFLOW] Final result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
                 return GenerationState(**result)
                 

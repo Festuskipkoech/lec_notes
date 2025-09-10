@@ -15,10 +15,8 @@ class Topic(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
-    # Use string-based relationship to avoid circular imports
-    creator = relationship("User", back_populates="topics")
-    subtopics = relationship("Subtopic", back_populates="topic", cascade="all, delete-orphan")
-    generation_sessions = relationship("GenerationSession", back_populates="topic", cascade="all, delete-orphan")
+    # Define relationships without back_populates to avoid circular issues
+    subtopics = relationship("Subtopic", cascade="all, delete-orphan", overlaps="topic")
 
 class Subtopic(Base):
     __tablename__ = "subtopics"
@@ -33,5 +31,6 @@ class Subtopic(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
-    topic = relationship("Topic", back_populates="subtopics")
-    content_chunks = relationship("ContentChunk", back_populates="subtopic", cascade="all, delete-orphan")
+    # Define relationships without back_populates to avoid circular issues
+    topic = relationship("Topic")
+    content_chunks = relationship("ContentChunk", cascade="all, delete-orphan")
