@@ -15,17 +15,16 @@ class GenerationNodes:
     @staticmethod
     async def generate_content_node(state: GenerationState) -> GenerationState:
         """
-        Generate content using vector-enhanced context retrieval.
-        This is where the magic happens - semantic context + quality generation.
+        Generate content AND quiz questions using vector-enhanced context retrieval.
         """
         try:
             db = SessionLocal()
             current_index = state.current_subtopic_index
             subtopic_title = state.subtopic_titles[current_index]
             
-            logger.info(f"[GENERATE] Starting vector-enhanced generation for subtopic {current_index + 1}: {subtopic_title}")
+            logger.info(f"[GENERATE] Starting content+quiz generation for subtopic {current_index + 1}: {subtopic_title}")
             
-            # Build query for finding relevant context - this is key for quality
+            # Build query for finding relevant context
             query_text = f"{state.topic_title} {subtopic_title}"
             
             # Get semantically relevant chunks from previous subtopics
@@ -46,8 +45,8 @@ class GenerationNodes:
             # Get upcoming concepts for forward-looking content
             upcoming_concepts = state.subtopic_titles[current_index + 1:current_index + 3]
             
-            # Generate with integrated prompt approach (system + context + generation)
-            content = await azure_client.generate_subtopic_with_vector_context(
+            # CHANGED: Single call generates BOTH content and quiz
+            result = await azure_client.generate_subtopic_with_vector_context(
                 topic_title=state.topic_title,
                 subtopic_title=subtopic_title,
                 level=state.level,
@@ -55,30 +54,38 @@ class GenerationNodes:
                 upcoming_concepts=upcoming_concepts
             )
             
-            # Store content in database immediately
+            content = result["content"]
+            quiz_questions = result["quiz_questions"]
+            
+            # Store content in database
             subtopic_record = await GenerationNodes._store_generated_content(
                 db, state.topic_id, current_index, subtopic_title, content
             )
+            
+            # Store quiz questions
+            from app.services.assessments import assessment_service
+            assessment_service.store_subtopic_quiz(db, subtopic_record.id, quiz_questions)
             
             # Chunk the content and store with embeddings for future context retrieval
             chunks = chunking_service.chunk_content(content, subtopic_title)
             await vector_service.store_content_chunks(db, subtopic_record.id, chunks)
             
             db.close()
-            logger.info(f"[GENERATE] Successfully generated and stored subtopic {current_index + 1} with {len(chunks)} chunks")
+            logger.info(f"[GENERATE] Successfully generated subtopic {current_index + 1} with {len(chunks)} chunks and {len(quiz_questions)} quiz questions")
             
-            # Return clean state - no content storage in state
+            # Return clean state
             updated_state = state.dict()
             updated_state['error_message'] = None
             updated_state['action'] = None
             return GenerationState(**updated_state)
             
         except Exception as e:
-            logger.error(f"[GENERATE] Content generation failed: {str(e)}")
+            logger.error(f"[GENERATE] Content+Quiz generation failed: {str(e)}")
             updated_state = state.dict()
             updated_state['error_message'] = f"Generation failed: {str(e)}"
             updated_state['action'] = None
             return GenerationState(**updated_state)
+
     
     @staticmethod
     async def _store_generated_content(db, topic_id: int, subtopic_index: int, 
@@ -111,10 +118,13 @@ class GenerationNodes:
         db.commit()
         db.refresh(subtopic_record)
         return subtopic_record
-    
+
+
     @staticmethod
     async def edit_content_node(state: GenerationState) -> GenerationState:
-        """Handle manual content editing - update database directly and re-embed"""
+        """
+        Handle manual content editing - update database and re-embed + update quiz if provided
+        """
         try:
             db = SessionLocal()
             current_index = state.current_subtopic_index
@@ -133,17 +143,24 @@ class GenerationNodes:
                         subtopic.title = state.edit_data["title"]
                     subtopic.updated_at = func.now()
                     
-                    # Re-chunk and re-embed the edited content for future context
+                    # Re-chunk and re-embed the edited content
                     chunks = chunking_service.chunk_content(
                         subtopic.content, subtopic.title
                     )
                     
-                    # Delete old chunks and create new ones with fresh embeddings
+                    # Delete old chunks and create new ones
                     db.query(ContentChunk).filter(
                         ContentChunk.subtopic_id == subtopic.id
                     ).delete()
                     
                     await vector_service.store_content_chunks(db, subtopic.id, chunks)
+                    
+                    # ADDED: Update quiz questions if provided
+                    if "quiz_questions" in state.edit_data:
+                        from app.services.assessments import assessment_service
+                        assessment_service.store_subtopic_quiz(
+                            db, subtopic.id, state.edit_data["quiz_questions"]
+                        )
                     
                     db.commit()
                     logger.info(f"[EDIT] Content edited and re-embedded with {len(chunks)} new chunks")

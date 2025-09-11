@@ -35,16 +35,22 @@ async def start_generation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to start generation: {str(e)}"
         )
-
 @router.post("/{session_id}/begin")
 async def begin_generation(
     session_id: int,
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Begin actual content generation for first subtopic"""
+    """Begin actual content generation - now returns content + quiz"""
     try:
         result = await generation_service.begin_generation(db, session_id)
-        return result
+        return {
+            "content": result["content"],
+            "subtopic_title": result["subtopic_title"],
+            "current_subtopic": result["current_subtopic"],
+            "total_subtopics": result["total_subtopics"],
+            "quiz_questions": result["quiz_questions"],  # ADDED
+            "error": result["error"]
+        }
     except ValueError as e:
         logger.error(f"Error {str(e)}")
         raise HTTPException(
@@ -63,13 +69,19 @@ async def generate_next_subtopic(
     session_id: int,
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Generate next subtopic content"""
+    """Generate next subtopic - now returns content + quiz"""
     try:
         result = await generation_service.generate_next_subtopic(db, session_id)
-        return result
+        return {
+            "content": result["content"],
+            "subtopic_title": result["subtopic_title"],
+            "current_subtopic": result["current_subtopic"],
+            "total_subtopics": result["total_subtopics"],
+            "quiz_questions": result["quiz_questions"],  # ADDED
+            "error": result["error"]
+        }
     except ValueError as e:
         logger.error(f"Error {str(e)}")
-
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e)
