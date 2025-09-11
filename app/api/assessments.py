@@ -16,20 +16,82 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assessments", tags=["assessments"])
 
-# Assignment Endpoints - Admin
-@router.post("/assignments/generate")
-async def generate_assignment(
-    request: AssignmentRequest,
-    db: Session = Depends(get_db)
-    ):
-    """Generate assignment questions using AI"""
+# Subtopic Quiz Endpoints (for quizzes generated with content)
+@router.post("/quiz/submit")
+async def submit_subtopic_quiz(
+    subtopic_id: int,
+    answers: List[int],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Submit subtopic quiz answers"""
     try:
-        result = await assessment_service.generate_assignment(
-            db, request.description, request.based_on_topics
+        result = assessment_service.submit_subtopic_quiz(
+            db, current_user.id, subtopic_id, answers
         )
         return {
             "success": True,
-            "assignment_data": result
+            "subtopic_id": subtopic_id,
+            "score_percentage": result["score_percentage"],
+            "correct_answers": result["correct_answers"],
+            "total_questions": result["total_questions"],
+            "passed": result["passed"],
+            "results": result["results"]
+        }
+    except ValueError as e:
+        logger.error(f"Quiz submission error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error submitting quiz: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to submit quiz: {str(e)}"
+        )
+
+@router.get("/quiz/history")
+async def get_quiz_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get student's quiz history"""
+    try:
+        history = assessment_service.get_quiz_history(db, current_user.id)
+        return {
+            "success": True,
+            "quiz_attempts": history,
+            "total_attempts": len(history)
+        }
+    except Exception as e:
+        logger.error(f"Error getting quiz history: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get quiz history: {str(e)}"
+        )
+
+# Assignment Endpoints - Admin (Generate → Review → Publish workflow)
+@router.post("/assignments/generate")
+async def generate_assignment(
+    request: AssignmentRequest,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
+    """Generate assignment with AI and create automatically"""
+    try:
+        assignment = await assessment_service.generate_and_create_assignment(
+            db, current_admin.id, request.description, request.based_on_topics
+        )
+        
+        return {
+            "success": True,
+            "assignment_id": assignment.id,
+            "title": assignment.title,
+            "description": assignment.description,
+            "questions": assignment.questions,
+            "total_marks": assignment.total_marks,
+            "status": "generated_ready_for_review"
         }
     except Exception as e:
         logger.error(f"Error generating assignment: {str(e)}")
@@ -38,28 +100,39 @@ async def generate_assignment(
             detail=f"Failed to generate assignment: {str(e)}"
         )
 
-@router.post("/assignments")
-async def create_assignment(
+@router.put("/assignments/{assignment_id}/edit")
+async def edit_assignment(
+    assignment_id: int,
     assignment: AssignmentCreate,
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_current_admin)
 ):
-    """Create and save assignment"""
+    """Edit assignment before publishing"""
     try:
-        result = assessment_service.create_assignment(
-            db, current_admin.id, assignment.title, assignment.description,
+        success = assessment_service.edit_assignment(
+            db, assignment_id, current_admin.id,
+            assignment.title, assignment.description, 
             assignment.questions, assignment.due_date
         )
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Assignment not found or already published"
+            )
+        
         return {
             "success": True,
-            "assignment_id": result.id,
-            "title": result.title
+            "message": "Assignment updated successfully",
+            "assignment_id": assignment_id
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error creating assignment: {str(e)}")
+        logger.error(f"Error editing assignment: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create assignment: {str(e)}"
+            detail=f"Failed to edit assignment: {str(e)}"
         )
 
 @router.post("/assignments/{assignment_id}/publish")
@@ -71,14 +144,17 @@ async def publish_assignment(
     """Publish assignment to students"""
     try:
         success = assessment_service.publish_assignment(db, assignment_id, current_admin.id)
+        
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Assignment not found or access denied"
             )
+        
         return {
             "success": True,
-            "message": "Assignment published successfully"
+            "message": "Assignment published successfully",
+            "assignment_id": assignment_id
         }
     except HTTPException:
         raise
@@ -90,14 +166,17 @@ async def publish_assignment(
         )
 
 @router.get("/assignments/{assignment_id}/submissions")
-async def get_submissions(
+async def get_assignment_submissions(
     assignment_id: int,
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_current_admin)
 ):
     """Get assignment submissions for grading"""
     try:
-        submissions = assessment_service.get_submissions(db, assignment_id, current_admin.id)
+        submissions = assessment_service.get_assignment_submissions(
+            db, assignment_id, current_admin.id
+        )
+        
         return {
             "success": True,
             "assignment_id": assignment_id,
@@ -112,7 +191,7 @@ async def get_submissions(
         )
 
 @router.post("/assignments/submissions/{submission_id}/grade")
-async def grade_submission(
+async def grade_assignment_submission(
     submission_id: int,
     grade: AssignmentGrade,
     db: Session = Depends(get_db),
@@ -120,17 +199,20 @@ async def grade_submission(
 ):
     """Grade assignment submission"""
     try:
-        success = assessment_service.grade_assignment(
+        success = assessment_service.grade_assignment_submission(
             db, submission_id, grade.awarded_marks, grade.feedback
         )
+        
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Submission not found"
             )
+        
         return {
             "success": True,
             "message": "Submission graded successfully",
+            "submission_id": submission_id,
             "awarded_marks": grade.awarded_marks
         }
     except HTTPException:
@@ -144,13 +226,14 @@ async def grade_submission(
 
 # Assignment Endpoints - Student
 @router.get("/assignments")
-async def get_assignments(
+async def get_available_assignments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get available assignments for student"""
+    """Get published assignments for student"""
     try:
-        assignments = assessment_service.get_assignments(db, current_user.id)
+        assignments = assessment_service.get_assignments_for_student(db, current_user.id)
+        
         return {
             "success": True,
             "assignments": assignments,
@@ -175,11 +258,13 @@ async def submit_assignment(
         success = assessment_service.submit_assignment(
             db, current_user.id, assignment_id, submission.answers
         )
+        
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Assignment already submitted or assignment not found"
+                detail="Assignment already submitted or not found"
             )
+        
         return {
             "success": True,
             "message": "Assignment submitted successfully",
@@ -194,7 +279,7 @@ async def submit_assignment(
             detail=f"Failed to submit assignment: {str(e)}"
         )
 
-# Practice Quiz Endpoints
+# Practice Quiz Endpoints - Student
 @router.post("/practice/generate")
 async def generate_practice_quiz(
     request: PracticeQuizRequest,
@@ -209,6 +294,7 @@ async def generate_practice_quiz(
         
         # Get the generated quiz
         quiz = db.query(PracticeQuiz).filter(PracticeQuiz.id == quiz_id).first()
+        
         if not quiz:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -217,13 +303,10 @@ async def generate_practice_quiz(
         
         return {
             "success": True,
-            "quiz": {
-                "id": quiz.id,
-                "topic_description": quiz.topic_description,
-                "questions": quiz.questions,
-                "total_questions": len(quiz.questions),
-                "score_percentage": quiz.score_percentage
-            }
+            "quiz_id": quiz.id,
+            "topic_description": quiz.topic_description,
+            "questions": quiz.questions,
+            "total_questions": len(quiz.questions)
         }
     except HTTPException:
         raise
@@ -246,13 +329,16 @@ async def submit_practice_quiz(
         result = assessment_service.submit_practice_quiz(
             db, quiz_id, current_user.id, answers
         )
+        
         return {
             "success": True,
             "quiz_id": quiz_id,
-            "results": result
+            "score_percentage": result["score_percentage"],
+            "correct_answers": result["correct_answers"],
+            "total_questions": result["total_questions"]
         }
     except ValueError as e:
-        logger.error(f"Validation error in practice quiz: {str(e)}")
+        logger.error(f"Practice quiz validation error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)

@@ -1,7 +1,9 @@
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
-from app.models.assessments import SubtopicAssessment, Assignment, AssignmentSubmission, PracticeQuiz
+from app.models.assessments import (
+    SubtopicAssessment, QuizAttempt, Assignment, AssignmentSubmission, PracticeQuiz
+)
 from app.models.notes import Topic, Subtopic
 from app.utils.azure_openai import azure_client
 import logging
@@ -10,9 +12,10 @@ logger = logging.getLogger(__name__)
 
 class AssessmentService:
     
+    # Subtopic Quiz Management (for generation workflow)
     @staticmethod
     def store_subtopic_quiz(db: Session, subtopic_id: int, quiz_questions: List[Dict[str, Any]]) -> None:
-        """Store quiz questions for a subtopic (used by generation workflow)"""
+        """Store quiz questions generated alongside content"""
         try:
             # Delete existing questions
             db.query(SubtopicAssessment).filter(
@@ -40,7 +43,7 @@ class AssessmentService:
     
     @staticmethod
     def get_subtopic_quiz(db: Session, subtopic_id: int) -> List[Dict[str, Any]]:
-        """Get quiz questions for a subtopic (used by generation API)"""
+        """Get quiz questions for display (used by generation API)"""
         try:
             questions = db.query(SubtopicAssessment).filter(
                 SubtopicAssessment.subtopic_id == subtopic_id
@@ -58,11 +61,96 @@ class AssessmentService:
             logger.error(f"Error getting quiz questions: {str(e)}")
             return []
     
-    # Assignment Methods
+    # Subtopic Quiz Submission (when student clicks submit)
     @staticmethod
-    async def generate_assignment(db: Session, description: str, based_on_topics: List[int] = None) -> Dict[str, Any]:
-        """Generate assignment questions using AI"""
+    def submit_subtopic_quiz(db: Session, student_id: int, subtopic_id: int, answers: List[int]) -> Dict[str, Any]:
+        """Submit and grade subtopic quiz"""
         try:
+            # Get questions
+            questions = db.query(SubtopicAssessment).filter(
+                SubtopicAssessment.subtopic_id == subtopic_id
+            ).order_by(SubtopicAssessment.id).all()
+            
+            if not questions:
+                raise ValueError("No quiz found for this subtopic")
+            
+            if len(answers) != len(questions):
+                raise ValueError("Answer count doesn't match question count")
+            
+            # Grade quiz
+            correct_count = 0
+            results = []
+            
+            for i, (question, answer) in enumerate(zip(questions, answers)):
+                is_correct = answer == question.correct_answer
+                if is_correct:
+                    correct_count += 1
+                
+                results.append({
+                    "question": question.question,
+                    "options": question.options,
+                    "selected": answer,
+                    "correct": question.correct_answer,
+                    "is_correct": is_correct,
+                    "explanation": question.explanation
+                })
+            
+            score_percentage = (correct_count / len(questions)) * 100
+            
+            # Store attempt
+            attempt = QuizAttempt(
+                student_id=student_id,
+                subtopic_id=subtopic_id,
+                score_percentage=score_percentage
+            )
+            db.add(attempt)
+            db.commit()
+            
+            logger.info(f"Quiz submitted: Student {student_id}, Score {score_percentage}%")
+            
+            return {
+                "score_percentage": score_percentage,
+                "correct_answers": correct_count,
+                "total_questions": len(questions),
+                "results": results,
+                "passed": score_percentage >= 70
+            }
+            
+        except Exception as e:
+            logger.error(f"Error submitting quiz: {str(e)}")
+            db.rollback()
+            raise
+    
+    @staticmethod
+    def get_quiz_history(db: Session, student_id: int) -> List[Dict[str, Any]]:
+        """Get student's quiz history"""
+        try:
+            attempts = db.query(QuizAttempt).join(Subtopic).filter(
+                QuizAttempt.student_id == student_id
+            ).order_by(QuizAttempt.completed_at.desc()).all()
+            
+            return [
+                {
+                    "attempt_id": attempt.id,
+                    "subtopic_id": attempt.subtopic_id,
+                    "subtopic_title": attempt.subtopic.title,
+                    "score_percentage": float(attempt.score_percentage),
+                    "completed_at": attempt.completed_at,
+                    "passed": attempt.score_percentage >= 70
+                } for attempt in attempts
+            ]
+            
+        except Exception as e:
+            logger.error(f"Error getting quiz history: {str(e)}")
+            return []
+    
+    # Assignment Management (Generate → Review → Publish workflow)
+    @staticmethod
+    async def generate_and_create_assignment(db: Session, admin_id: int, description: str, 
+                                           based_on_topics: List[int] = None) -> Assignment:
+        """Generate assignment with AI and create it automatically"""
+        try:
+            # Get context from topics if provided
             context = ""
             if based_on_topics:
                 topics = db.query(Topic).filter(Topic.id.in_(based_on_topics)).all()
@@ -75,46 +163,68 @@ class AssessmentService:
                         if sub.content:
                             context += f"{sub.title}: {sub.content[:500]}...\n"
             
-            result = await azure_client.generate_assignment_questions(
+            # Generate questions
+            assignment_data = await azure_client.generate_assignment_questions(
                 description=description,
                 number_of_questions=5,
                 difficulty_level="medium",
                 context_content=context
             )
             
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error generating assignment: {str(e)}")
-            raise Exception(f"Failed to generate assignment: {str(e)}")
-    
-    @staticmethod
-    def create_assignment(db: Session, admin_id: int, title: str, description: str, 
-                         questions: List[Dict[str, Any]], due_date=None) -> Assignment:
-        """Create and save assignment"""
-        try:
-            total_marks = sum(q.get('marks', 20) for q in questions)
+            # Auto-create assignment
+            total_marks = assignment_data.get('total_marks', 100)
+            title = assignment_data.get('suggested_title', f"Assignment: {description[:50]}")
             
             assignment = Assignment(
                 title=title,
                 description=description,
-                questions=questions,
+                questions=assignment_data['questions'],
                 total_marks=total_marks,
                 created_by=admin_id,
-                due_date=due_date
+                is_published=False  # Created but not published
             )
             
             db.add(assignment)
             db.commit()
             db.refresh(assignment)
             
-            logger.info(f"Created assignment: {title}")
+            logger.info(f"Generated and created assignment: {title}")
             return assignment
             
         except Exception as e:
-            logger.error(f"Error creating assignment: {str(e)}")
+            logger.error(f"Error generating assignment: {str(e)}")
             db.rollback()
-            raise Exception(f"Failed to create assignment: {str(e)}")
+            raise
+    
+    @staticmethod
+    def edit_assignment(db: Session, assignment_id: int, admin_id: int, 
+                       title: str, description: str, questions: List[Dict[str, Any]], 
+                       due_date=None) -> bool:
+        """Edit assignment before publishing"""
+        try:
+            assignment = db.query(Assignment).filter(
+                Assignment.id == assignment_id,
+                Assignment.created_by == admin_id,
+                Assignment.is_published == False  # Only edit unpublished
+            ).first()
+            
+            if not assignment:
+                return False
+            
+            assignment.title = title
+            assignment.description = description
+            assignment.questions = questions
+            assignment.due_date = due_date
+            assignment.total_marks = sum(q.get('marks', 20) for q in questions)
+            
+            db.commit()
+            logger.info(f"Assignment {assignment_id} edited")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error editing assignment: {str(e)}")
+            db.rollback()
+            return False
     
     @staticmethod
     def publish_assignment(db: Session, assignment_id: int, admin_id: int) -> bool:
@@ -131,7 +241,7 @@ class AssessmentService:
             assignment.is_published = True
             db.commit()
             
-            logger.info(f"Published assignment {assignment_id}")
+            logger.info(f"Assignment {assignment_id} published")
             return True
             
         except Exception as e:
@@ -140,13 +250,14 @@ class AssessmentService:
             return False
     
     @staticmethod
-    def get_assignments(db: Session, student_id: int) -> List[Dict[str, Any]]:
+    def get_assignments_for_student(db: Session, student_id: int) -> List[Dict[str, Any]]:
         """Get published assignments for student"""
         try:
             assignments = db.query(Assignment).filter(Assignment.is_published == True).all()
             
             result = []
             for assignment in assignments:
+                # Check submission status
                 submission = db.query(AssignmentSubmission).filter(
                     AssignmentSubmission.assignment_id == assignment.id,
                     AssignmentSubmission.student_id == student_id
@@ -161,7 +272,7 @@ class AssessmentService:
                     "due_date": assignment.due_date,
                     "submitted": submission is not None,
                     "graded": submission.graded_at is not None if submission else False,
-                    "score": submission.awarded_marks if submission and submission.graded_at else None
+                    "awarded_marks": submission.awarded_marks if submission and submission.graded_at else None
                 })
             
             return result
@@ -172,7 +283,7 @@ class AssessmentService:
     
     @staticmethod
     def submit_assignment(db: Session, student_id: int, assignment_id: int, answers: List[str]) -> bool:
-        """Submit assignment answers"""
+        """Submit assignment"""
         try:
             # Check if already submitted
             existing = db.query(AssignmentSubmission).filter(
@@ -183,7 +294,6 @@ class AssessmentService:
             if existing:
                 return False
             
-            # Create submission
             submission = AssignmentSubmission(
                 assignment_id=assignment_id,
                 student_id=student_id,
@@ -202,35 +312,10 @@ class AssessmentService:
             return False
     
     @staticmethod
-    def grade_assignment(db: Session, submission_id: int, awarded_marks: int, feedback: str = None) -> bool:
-        """Grade assignment submission"""
+    def get_assignment_submissions(db: Session, assignment_id: int, admin_id: int) -> List[Dict[str, Any]]:
+        """Get submissions for grading"""
         try:
-            submission = db.query(AssignmentSubmission).filter(
-                AssignmentSubmission.id == submission_id
-            ).first()
-            
-            if not submission:
-                return False
-            
-            submission.awarded_marks = awarded_marks
-            submission.feedback = feedback
-            submission.graded_at = func.now()
-            
-            db.commit()
-            
-            logger.info(f"Graded submission {submission_id} with {awarded_marks} marks")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error grading assignment: {str(e)}")
-            db.rollback()
-            return False
-    
-    @staticmethod
-    def get_submissions(db: Session, assignment_id: int, admin_id: int) -> List[Dict[str, Any]]:
-        """Get assignment submissions for grading"""
-        try:
-            # Verify admin owns this assignment
+            # Verify admin owns assignment
             assignment = db.query(Assignment).filter(
                 Assignment.id == assignment_id,
                 Assignment.created_by == admin_id
@@ -259,10 +344,34 @@ class AssessmentService:
             logger.error(f"Error getting submissions: {str(e)}")
             return []
     
-    # Practice Quiz Methods
+    @staticmethod
+    def grade_assignment_submission(db: Session, submission_id: int, awarded_marks: int, feedback: str = None) -> bool:
+        """Grade assignment submission"""
+        try:
+            submission = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.id == submission_id
+            ).first()
+            
+            if not submission:
+                return False
+            
+            submission.awarded_marks = awarded_marks
+            submission.feedback = feedback
+            submission.graded_at = func.now()
+            
+            db.commit()
+            logger.info(f"Submission {submission_id} graded with {awarded_marks} marks")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error grading submission: {str(e)}")
+            db.rollback()
+            return False
+    
+    # Practice Quiz Management
     @staticmethod
     async def generate_practice_quiz(db: Session, student_id: int, topic_description: str, num_questions: int = 10) -> int:
-        """Generate and store practice quiz"""
+        """Generate practice quiz"""
         try:
             quiz_data = await azure_client.generate_practice_quiz(
                 topic_description, num_questions, "medium"
@@ -278,17 +387,17 @@ class AssessmentService:
             db.commit()
             db.refresh(practice_quiz)
             
-            logger.info(f"Generated practice quiz {practice_quiz.id} for student {student_id}")
+            logger.info(f"Practice quiz {practice_quiz.id} generated")
             return practice_quiz.id
             
         except Exception as e:
             logger.error(f"Error generating practice quiz: {str(e)}")
             db.rollback()
-            raise Exception(f"Failed to generate practice quiz: {str(e)}")
+            raise
     
     @staticmethod
     def submit_practice_quiz(db: Session, quiz_id: int, student_id: int, answers: List[int]) -> Dict[str, Any]:
-        """Submit practice quiz attempt"""
+        """Submit practice quiz"""
         try:
             quiz = db.query(PracticeQuiz).filter(
                 PracticeQuiz.id == quiz_id,
@@ -309,12 +418,10 @@ class AssessmentService:
                     correct_count += 1
             
             score = (correct_count / len(questions)) * 100
-            
-            # Update quiz with score
             quiz.score_percentage = score
             db.commit()
             
-            logger.info(f"Practice quiz {quiz_id} submitted with score {score}%")
+            logger.info(f"Practice quiz {quiz_id} completed with {score}%")
             
             return {
                 "score_percentage": score,
@@ -325,7 +432,7 @@ class AssessmentService:
         except Exception as e:
             logger.error(f"Error submitting practice quiz: {str(e)}")
             db.rollback()
-            raise Exception(f"Failed to submit practice quiz: {str(e)}")
+            raise
 
 # Create service instance
 assessment_service = AssessmentService()
