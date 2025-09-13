@@ -6,7 +6,7 @@ from app.dependencies import get_current_user, get_current_admin
 from app.models.user import User
 from app.schemas.assessments import (
     AssignmentRequest, AssignmentCreate, AssignmentSubmission, AssignmentGrade,
-    PracticeQuizRequest
+    PracticeQuizRequest, QuizAttemptRequest
 )
 from app.services.assessments import assessment_service
 from app.models.assessments import PracticeQuiz
@@ -15,33 +15,27 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assessments", tags=["assessments"])
-
-# Subtopic Quiz Endpoints (for quizzes generated with content)
 @router.post("/quiz/submit")
 async def submit_subtopic_quiz(
-    subtopic_id: int,
-    answers: List[int],
+    request: QuizAttemptRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Submit subtopic quiz answers"""
     try:
         result = assessment_service.submit_subtopic_quiz(
-            db, current_user.id, subtopic_id, answers
+            db, current_user.id, request.subtopic_id, request.answers
         )
         return {
             "success": True,
-            "subtopic_id": subtopic_id,
-            "score_percentage": result["score_percentage"],
-            "correct_answers": result["correct_answers"],
-            "total_questions": result["total_questions"],
-            "passed": result["passed"],
-            "results": result["results"]
+            "subtopic_id": request.subtopic_id,
+            **result
         }
     except ValueError as e:
-        logger.error(f"Quiz submission error: {str(e)}")
+        # Handle duplicate submission gracefully
+        logger.warning(f"Quiz submission validation error: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,  # Changed to 409 Conflict
             detail=str(e)
         )
     except Exception as e:
@@ -50,7 +44,46 @@ async def submit_subtopic_quiz(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to submit quiz: {str(e)}"
         )
-
+        
+@router.get("/subtopic/{subtopic_id}/quiz")
+async def get_subtopic_quiz(
+    subtopic_id:int,
+    db:Session = Depends(get_db)
+):
+    # Get quiz questions for a published topic
+    try:
+        quiz_questions = assessment_service.get_subtopic_quiz(db, subtopic_id)
+        return {
+            "success": True,
+            "questions": quiz_questions,
+            "subtopic_id": subtopic_id
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Failed to get subtopic quiz {str(e)}"
+        )
+@router.get("/subtopic/{subtopic_id}/attempt")
+async def get_quiz_attempt_status(
+    subtopic_id: int, 
+    db: Session =  Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        attempt_data = assessment_service.get_student_quiz_attempt(
+            db, current_user.id, subtopic_id
+        )
+        return {
+            "success": True,
+            "subtopic_id": subtopic_id,
+            **attempt_data
+        }
+    except Exception as e:
+        logger.error(f"Error getting current status {str(e)}")
+        raise HTTPException(
+            status_code =status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Failed to get attempt status {str(e)}"
+        )
 @router.get("/quiz/history")
 async def get_quiz_history(
     db: Session = Depends(get_db),

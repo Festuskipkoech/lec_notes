@@ -105,14 +105,16 @@ QUIZ REQUIREMENTS:
 RETURN AS JSON:
 {{
   "content": "Full educational content here...",
-  "quiz_questions": [
-    {{
-      "question": "Question text?",
-      "options": ["A", "B", "C", "D"],
-      "correct_answer": 0,
-      "explanation": "Why this is correct"
-    }}
-  ]
+  
+        "quiz_questions": [
+            {{
+                "id": unique_id,
+                "question": "question text",
+                "options": ["option A", "option B", "option C", "option D"],
+                "correct_answer": "A" or "B" or "C" or "D",
+                "explanation": "brief explanation of why this answer is correct"
+            }}
+        ]
 }}"""
         
         else:
@@ -146,7 +148,7 @@ RETURN AS JSON:
     {{
       "question": "Question text?",
       "options": ["A", "B", "C", "D"], 
-      "correct_answer": 0,
+      "correct_answer": "A" or "B" or "C" or "D",
       "explanation": "Why this is correct"
     }}
   ]
@@ -366,6 +368,18 @@ Format your response as JSON with keys: "suggestions" and "recommended_changes\"
         
         if not isinstance(question['options'], list) or len(question['options']) != 4:
             return False
+        correct_answer = question['correct_answer']
+        
+        if isinstance(correct_answer, str):
+            # convert letter to index
+            if correct_answer.upper() in ['A', 'B', 'C', 'D']:
+                question['correct_answer'] = ord(correct_answer.upper()) -ord('A')
+            else:
+                return False
+        elif isinstance(correct_answer, int):
+            # Validate integer range
+            if not (0 <= correct_answer <= 3):
+                return False
         
         if not isinstance(question['correct_answer'], int) or not (0 <= question['correct_answer'] <= 3):
             return False

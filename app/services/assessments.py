@@ -53,19 +53,28 @@ class AssessmentService:
                 {
                     "id": q.id,
                     "question": q.question,
-                    "options": q.options
+                    "options": q.options,
+                    "explanation": q.explanation
                 } for q in questions
             ]
             
         except Exception as e:
             logger.error(f"Error getting quiz questions: {str(e)}")
             return []
-    
-    # Subtopic Quiz Submission (when student clicks submit)
+
     @staticmethod
     def submit_subtopic_quiz(db: Session, student_id: int, subtopic_id: int, answers: List[int]) -> Dict[str, Any]:
         """Submit and grade subtopic quiz"""
         try:
+            # CHECK FOR EXISTING ATTEMPT FIRST
+            existing_attempt = db.query(QuizAttempt).filter(
+                QuizAttempt.student_id == student_id,
+                QuizAttempt.subtopic_id == subtopic_id
+            ).first()
+            
+            if existing_attempt:
+                raise ValueError("Quiz already completed. Only one attempt allowed per quiz.")
+            
             # Get questions
             questions = db.query(SubtopicAssessment).filter(
                 SubtopicAssessment.subtopic_id == subtopic_id
@@ -90,18 +99,19 @@ class AssessmentService:
                     "question": question.question,
                     "options": question.options,
                     "selected": answer,
-                    "correct": question.correct_answer,
+                    "correct_answer": question.correct_answer,  # Fixed field name
                     "is_correct": is_correct,
                     "explanation": question.explanation
                 })
             
             score_percentage = (correct_count / len(questions)) * 100
             
-            # Store attempt
+            # Store attempt WITH ANSWERS
             attempt = QuizAttempt(
                 student_id=student_id,
                 subtopic_id=subtopic_id,
-                score_percentage=score_percentage
+                score_percentage=score_percentage,
+                student_answers=answers  # Store individual answers
             )
             db.add(attempt)
             db.commit()
@@ -110,7 +120,7 @@ class AssessmentService:
             
             return {
                 "score_percentage": score_percentage,
-                "correct_answers": correct_count,
+                "correct_answers": [q.correct_answer for q in questions],  # Array format
                 "total_questions": len(questions),
                 "results": results,
                 "passed": score_percentage >= 70
@@ -119,8 +129,62 @@ class AssessmentService:
         except Exception as e:
             logger.error(f"Error submitting quiz: {str(e)}")
             db.rollback()
-            raise
-    
+            raise    
+    @staticmethod
+    def get_student_quiz_attempt(db: Session, student_id: int, subtopic_id: int) -> Dict[str, Any]:
+        """Check if student has already attempted this subtopic quiz"""
+        try:
+            # Check for existing attempt
+            attempt = db.query(QuizAttempt).filter(
+                QuizAttempt.student_id == student_id,
+                QuizAttempt.subtopic_id == subtopic_id
+            ).order_by(QuizAttempt.completed_at.desc()).first() 
+            
+            if attempt:
+                # Get the quiz questions
+                questions = db.query(SubtopicAssessment).filter(
+                    SubtopicAssessment.subtopic_id == subtopic_id
+                ).order_by(SubtopicAssessment.id).all()                
+                results = []
+                for i, (question, student_answer) in enumerate(zip(questions, attempt.student_answers)):
+                    is_correct = student_answer == question.correct_answer
+                    results.append({
+                        "question": question.question,
+                        "options": question.options,
+                        "selected": student_answer,
+                        "correct_answer": question.correct_answer,
+                        "is_correct": is_correct,
+                        "explanation": question.explanation
+                    })
+
+                return {
+                    "already_attempted": True,
+                    "attempt_id": attempt.id,
+                    "score_percentage": float(attempt.score_percentage),
+                    "completed_at": attempt.completed_at,
+                    "student_answers": attempt.student_answers,
+                    "questions": [
+                        {
+                            "id": q.id,
+                            "question": q.question,
+                            "options": q.options,
+                            "explanation": q.explanation
+                        } for q in questions
+                    ],
+                    "results": {
+                        "score_percentage": float(attempt.score_percentage),
+                        "correct_answers": [q.correct_answer for q in questions],
+                        "total_questions": len(questions),
+                        "results": results,
+                        "passed": attempt.score_percentage >= 70
+                    }
+                }
+            else:
+                return {"already_attempted": False}
+                
+        except Exception as e:
+            logger.error(f"Error checking quiz attempt: {str(e)}")
+            return {"already_attempted": False}
     @staticmethod
     def get_quiz_history(db: Session, student_id: int) -> List[Dict[str, Any]]:
         """Get student's quiz history"""
@@ -292,7 +356,7 @@ class AssessmentService:
             ).first()
             
             if existing:
-                return False
+                raise ValueError("Assignment already submitted. Only one submission allowed per assignment.")
             
             submission = AssignmentSubmission(
                 assignment_id=assignment_id,
@@ -309,7 +373,7 @@ class AssessmentService:
         except Exception as e:
             logger.error(f"Error submitting assignment: {str(e)}")
             db.rollback()
-            return False
+            raise  # Changed from return False to raise
     
     @staticmethod
     def get_assignment_submissions(db: Session, assignment_id: int, admin_id: int) -> List[Dict[str, Any]]:
@@ -394,7 +458,6 @@ class AssessmentService:
             logger.error(f"Error generating practice quiz: {str(e)}")
             db.rollback()
             raise
-    
     @staticmethod
     def submit_practice_quiz(db: Session, quiz_id: int, student_id: int, answers: List[int]) -> Dict[str, Any]:
         """Submit practice quiz"""
@@ -406,6 +469,10 @@ class AssessmentService:
             
             if not quiz:
                 raise ValueError("Practice quiz not found")
+            
+            # Check if already completed
+            if quiz.score_percentage is not None:
+                raise ValueError("Practice quiz already completed. Only one attempt allowed.")
             
             questions = quiz.questions
             if len(answers) != len(questions):

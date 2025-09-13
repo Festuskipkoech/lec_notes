@@ -22,6 +22,7 @@ class QuizAttempt(Base):
     student_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     subtopic_id = Column(Integer, ForeignKey("subtopics.id", ondelete="CASCADE"), nullable=False)
     score_percentage = Column(DECIMAL(5, 2), nullable=False, default=0.00)
+    student_answers = Column(JSON)
     completed_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class Assignment(Base):

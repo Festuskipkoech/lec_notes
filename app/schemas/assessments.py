@@ -1,7 +1,21 @@
+# app/schemas/assessments.py - Clean, minimal schemas
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+# Quiz Schemas
+class QuizAttemptRequest(BaseModel):
+    subtopic_id: int
+    answers: List[int]  # Selected option indices
+
+class QuizAttemptResponse(BaseModel):
+    score_percentage: float
+    correct_answers: int
+    total_questions: int
+    results: List[Dict[str, Any]]
+    passed: bool
+
+# Assignment Schemas
 class AssignmentRequest(BaseModel):
     description: str
     based_on_topics: Optional[List[int]] = None
@@ -30,6 +44,7 @@ class PracticeQuizResponse(BaseModel):
     questions: List[Dict[str, Any]]
     score_percentage: Optional[float] = None
 
+# Enhanced Generation Response
 class GenerationResponse(BaseModel):
     content: str
     subtopic_title: str
@@ -38,8 +53,9 @@ class GenerationResponse(BaseModel):
     quiz_questions: List[Dict[str, Any]]
     error: Optional[str] = None
 
+# Enhanced Edit Request (add to existing schemas)
 class EditContentRequest(BaseModel):
     """For editing both content and quiz questions"""
     title: str
     content: str
-    quiz_questions: Optional[List[Dict[str, Any]]] = None  
+    quiz_questions: Optional[List[Dict[str, Any]]] = None  # NEW: Optional quiz editing
