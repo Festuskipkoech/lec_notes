@@ -1,4 +1,3 @@
-# app/main.py - Fixed version
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
@@ -43,11 +42,53 @@ def enable_pgvector():
         print(f"pgvector error: {e}")
         return False
 
+# Add missing columns to users table
+def add_user_columns():
+    try:
+        import psycopg2
+        from app.config import settings
+        
+        conn = psycopg2.connect(settings.database_url)
+        conn.autocommit = True
+        cursor = conn.cursor()
+        
+        # Check if columns exist
+        cursor.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'users' AND column_name IN ('full_name', 'phone', 'refresh_token')
+        """)
+        existing_columns = [row[0] for row in cursor.fetchall()]
+        
+        columns_to_add = []
+        if 'full_name' not in existing_columns:
+            columns_to_add.append("ADD COLUMN full_name VARCHAR NOT NULL DEFAULT ''")
+        if 'phone' not in existing_columns:
+            columns_to_add.append("ADD COLUMN phone VARCHAR")
+        if 'refresh_token' not in existing_columns:
+            columns_to_add.append("ADD COLUMN refresh_token VARCHAR")
+        
+        if columns_to_add:
+            alter_query = f"ALTER TABLE users {', '.join(columns_to_add)}"
+            cursor.execute(alter_query)
+            print(f"Added columns to users table: {[col.split()[2] for col in columns_to_add]}")
+        else:
+            print("All user columns already exist")
+        
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error adding user columns: {e}")
+        return False
+
 # Only run these during startup, not import
 def startup_tasks():
     enable_pgvector()
     # Create database tables
     Base.metadata.create_all(bind=engine)
+    # Add missing user columns
+    add_user_columns()
     # Create admin user
     create_admin()
 
