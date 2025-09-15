@@ -1,9 +1,11 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any,Optional
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 from app.models.assessments import (
     SubtopicAssessment, QuizAttempt, Assignment, AssignmentSubmission, PracticeQuiz
 )
+from app.schemas.assessments import QuestionSchema
 from app.models.notes import Topic, Subtopic
 from app.utils.azure_openai import azure_client
 import logging
@@ -261,15 +263,21 @@ class AssessmentService:
             raise
     
     @staticmethod
-    def edit_assignment(db: Session, assignment_id: int, admin_id: int, 
-                       title: str, description: str, questions: List[Dict[str, Any]], 
-                       due_date=None) -> bool:
+    def edit_assignment(
+        db: Session,                          
+        assignment_id: int,                   
+        admin_id: int,                        
+        title: str,                           
+        description: str,                     
+        questions: List[QuestionSchema],      
+        due_date: Optional[datetime] = None   
+    ) -> bool:
         """Edit assignment before publishing"""
         try:
             assignment = db.query(Assignment).filter(
                 Assignment.id == assignment_id,
                 Assignment.created_by == admin_id,
-                Assignment.is_published == False  # Only edit unpublished
+                Assignment.is_published == False
             ).first()
             
             if not assignment:
@@ -277,19 +285,28 @@ class AssessmentService:
             
             assignment.title = title
             assignment.description = description
-            assignment.questions = questions
+            
+            # Convert QuestionSchema objects to dictionaries for JSON storage
+            questions_dict = [
+                {
+                    "question": q.question,
+                    "marks": q.marks,
+                    "guidance": q.guidance,
+                    "marking_criteria": q.marking_criteria
+                }
+                for q in questions
+            ]
+            assignment.questions = questions_dict
             assignment.due_date = due_date
-            assignment.total_marks = sum(q.get('marks', 20) for q in questions)
+            assignment.total_marks = sum(q.marks for q in questions)
             
             db.commit()
-            logger.info(f"Assignment {assignment_id} edited")
             return True
             
         except Exception as e:
             logger.error(f"Error editing assignment: {str(e)}")
             db.rollback()
             return False
-    
     @staticmethod
     def publish_assignment(db: Session, assignment_id: int, admin_id: int) -> bool:
         """Publish assignment to students"""
@@ -335,7 +352,7 @@ class AssessmentService:
                     "total_marks": assignment.total_marks,
                     "due_date": assignment.due_date,
                     "submitted": submission is not None,
-                    "graded": submission.graded_at is not None if submission else False,
+                    "grade": submission.graded_at is not None if submission else False,
                     "awarded_marks": submission.awarded_marks if submission and submission.graded_at else None
                 })
             
@@ -376,38 +393,84 @@ class AssessmentService:
             raise  # Changed from return False to raise
     
     @staticmethod
-    def get_assignment_submissions(db: Session, assignment_id: int, admin_id: int) -> List[Dict[str, Any]]:
-        """Get submissions for grading"""
+    def get_assignment_submissions(db: Session, assignment_id: int, admin_id: int) -> Dict[str, Any]:
+        """Get assignment with questions AND submissions for marking"""
         try:
-            # Verify admin owns assignment
+            # Get assignment with questions
             assignment = db.query(Assignment).filter(
                 Assignment.id == assignment_id,
                 Assignment.created_by == admin_id
             ).first()
             
             if not assignment:
-                return []
+                return {"assignment": None, "submissions": []}
             
+            # Get submissions ordered by submission time (for consistent indexing)
             submissions = db.query(AssignmentSubmission).filter(
                 AssignmentSubmission.assignment_id == assignment_id
-            ).all()
+            ).order_by(AssignmentSubmission.submitted_at.asc()).all()
             
-            return [
-                {
-                    "id": sub.id,
-                    "student_id": sub.student_id,
-                    "answers": sub.answers,
-                    "submitted_at": sub.submitted_at,
-                    "awarded_marks": sub.awarded_marks,
-                    "feedback": sub.feedback,
-                    "graded": sub.graded_at is not None
-                } for sub in submissions
-            ]
-            
+            return {
+                "assignment": {
+                    "id": assignment.id,
+                    "title": assignment.title,
+                    "description": assignment.description,
+                    "questions": assignment.questions,
+                    "total_marks": assignment.total_marks
+                },
+                "submissions": [
+                    {
+                        "id": sub.id,
+                        "student_id": sub.student_id,
+                        "answers": sub.answers,
+                        "submitted_at": sub.submitted_at,
+                        "awarded_marks": sub.awarded_marks,
+                        "feedback": sub.feedback,
+                        "graded": sub.graded_at is not None
+                    } for sub in submissions
+                ]
+            }
         except Exception as e:
-            logger.error(f"Error getting submissions: {str(e)}")
+            logger.error(f"Error getting assignment for marking: {str(e)}")
+            return {"assignment": None, "submissions": []}
+        
+    @staticmethod
+    def get_admin_assignments(db: Session, admin_id: int) -> List[Dict[str, Any]]:
+        """Get assignments created by admin with submission counts"""
+        try:
+            assignments = db.query(Assignment).filter(
+                Assignment.created_by == admin_id,  
+                Assignment.is_published == True
+            ).order_by(Assignment.created_at.desc()).all()
+            
+            result = []
+            for assignment in assignments:
+                submission_count = db.query(AssignmentSubmission).filter(
+                    AssignmentSubmission.assignment_id == assignment.id
+                ).count()
+                
+                graded_count = db.query(AssignmentSubmission).filter(
+                    AssignmentSubmission.assignment_id == assignment.id,
+                    AssignmentSubmission.graded_at.isnot(None)
+                ).count()
+                
+                result.append({
+                    "id": assignment.id,
+                    "title": assignment.title,
+                    "description": assignment.description,
+                    "total_marks": assignment.total_marks,
+                    "is_published": assignment.is_published,
+                    "due_date": assignment.due_date,
+                    "created_at": assignment.created_at,
+                    "submission_count": submission_count,
+                    "graded_count": graded_count,
+                    "pending_grading": submission_count - graded_count
+                })
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error getting admin assignments: {str(e)}")
             return []
-    
     @staticmethod
     def grade_assignment_submission(db: Session, submission_id: int, awarded_marks: int, feedback: str = None) -> bool:
         """Grade assignment submission"""

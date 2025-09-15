@@ -51,6 +51,7 @@ class AssignmentSubmission(Base):
     feedback = Column(Text)
     submitted_at = Column(DateTime(timezone=True), server_default=func.now())
     graded_at = Column(DateTime(timezone=True))
+    # question_grades = Column(JSON)
 
 class PracticeQuiz(Base):
     """Student practice quizzes"""

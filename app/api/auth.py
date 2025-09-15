@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.schemas.auth import UserCreate, UserLogin, Token, User
+from app.schemas.auth import UserCreate, UserLogin, Token, TokenRefresh, User
 from app.services.auth_service import auth_service
 from app.models.user import User as UserModel
 from app.config import settings
@@ -28,6 +28,8 @@ async def register_user(
     db_user = UserModel(
         email=user_data.email,
         password_hash=hashed_password,
+        full_name=user_data.full_name,
+        phone=user_data.phone,
         role=user_data.role
     )
     
@@ -55,7 +57,48 @@ async def login_user(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
     
-    return {"access_token": access_token, "token_type": "bearer"}
+    refresh_token = auth_service.create_refresh_token()
+    auth_service.update_refresh_token(db, user, refresh_token)
+    
+    return {
+        "access_token": access_token, 
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+@router.post("/refresh", response_model=Token)
+async def refresh_token(
+    token_data: TokenRefresh,
+    db: Session = Depends(get_db)
+):
+    user = auth_service.verify_refresh_token(db, token_data.refresh_token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+    
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = auth_service.create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    
+    new_refresh_token = auth_service.create_refresh_token()
+    auth_service.update_refresh_token(db, user, new_refresh_token)
+    
+    return {
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer"
+    }
+
+@router.post("/logout")
+async def logout_user(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    auth_service.revoke_refresh_token(db, current_user)
+    return {"message": "Successfully logged out"}
 
 @router.get("/me", response_model=User)
 async def get_current_user_info(

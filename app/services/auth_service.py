@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.schemas.auth import TokenData
 from app.config import settings
+import secrets
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -38,6 +39,10 @@ class AuthService:
         return encoded_jwt
     
     @staticmethod
+    def create_refresh_token() -> str:
+        return secrets.token_urlsafe(32)
+    
+    @staticmethod
     def verify_token(token: str, credentials_exception) -> TokenData:
         try:
             payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
@@ -48,6 +53,21 @@ class AuthService:
         except JWTError:
             raise credentials_exception
         return token_data
+    
+    @staticmethod
+    def verify_refresh_token(db: Session, refresh_token: str) -> Optional[User]:
+        user = db.query(User).filter(User.refresh_token == refresh_token).first()
+        return user if user and user.is_active else None
+    
+    @staticmethod
+    def update_refresh_token(db: Session, user: User, refresh_token: str):
+        user.refresh_token = refresh_token
+        db.commit()
+    
+    @staticmethod
+    def revoke_refresh_token(db: Session, user: User):
+        user.refresh_token = None
+        db.commit()
     
     @staticmethod
     def get_user_by_email(db: Session, email: str) -> Optional[User]:

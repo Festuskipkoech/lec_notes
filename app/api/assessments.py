@@ -143,9 +143,13 @@ async def edit_assignment(
     """Edit assignment before publishing"""
     try:
         success = assessment_service.edit_assignment(
-            db, assignment_id, current_admin.id,
-            assignment.title, assignment.description, 
-            assignment.questions, assignment.due_date
+            db,
+            assignment_id, 
+            current_admin.id,
+            assignment.title,
+            assignment.description,
+            assignment.questions,
+            assignment.due_date
         )
         
         if not success:
@@ -222,7 +226,24 @@ async def get_assignment_submissions(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get submissions: {str(e)}"
         )
-
+@router.get("/assignments/admin")
+async def get_admin_assignments(
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
+    # Get all published assignments by admin with submission stats
+    try:
+        assignments = assessment_service.get_admin_assignments(db, current_admin.id)
+        return {
+            "success": True,
+            "assignments": assignments
+        }
+    except Exception as e:
+        logger.error(f"Error getting admin assignments {str(e)}")
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Failed to get assignments: {str(e)}"
+        )
 @router.post("/assignments/submissions/{submission_id}/grade")
 async def grade_assignment_submission(
     submission_id: int,

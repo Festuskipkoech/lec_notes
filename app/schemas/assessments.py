@@ -1,7 +1,6 @@
-# app/schemas/assessments.py - Clean, minimal schemas
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Quiz Schemas
 class QuizAttemptRequest(BaseModel):
@@ -15,17 +14,27 @@ class QuizAttemptResponse(BaseModel):
     results: List[Dict[str, Any]]
     passed: bool
 
+
 # Assignment Schemas
 class AssignmentRequest(BaseModel):
     description: str
     based_on_topics: Optional[List[int]] = None
     total_marks: int = 100
-
+class QuestionSchema(BaseModel):
+    question: str
+    marks: int
+    guidance: Optional[str] = None
+    marking_criteria: Optional[str] = None
 class AssignmentCreate(BaseModel):
     title: str
     description: Optional[str] = None
-    questions: List[Dict[str, Any]]
-    due_date: Optional[datetime] = None
+    questions: List[QuestionSchema]
+    due_date: Optional[datetime] = Field(None, description="Due date in UTC")
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
 class AssignmentSubmission(BaseModel):
     answers: List[str]
