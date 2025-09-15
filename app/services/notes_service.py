@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from app.models.notes import Topic, Subtopic
 from app.models.user import User, UserRole
+from app.models.generation import GenerationSession
 from app.schemas.notes import TopicResponse, TopicListResponse, SubtopicResponse
 
 class NotesService:
@@ -91,16 +92,26 @@ class NotesService:
         
         db.commit()
         return True
-    
+        
     @staticmethod
     def delete_topic(db: Session, topic_id: int) -> bool:
         """Delete topic and all subtopics (admin only)"""
-        topic = db.query(Topic).filter(Topic.id == topic_id).first()
-        if not topic:
-            return False
-        
-        db.delete(topic)
-        db.commit()
-        return True
+        try:
+            # First, delete all generation sessions for this topic
+            db.query(GenerationSession).filter(
+                GenerationSession.topic_id == topic_id
+            ).delete()
+            
+            # Then delete the topic (subtopics will be deleted by cascade)
+            topic = db.query(Topic).filter(Topic.id == topic_id).first()
+            if not topic:
+                return False
+            
+            db.delete(topic)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            raise e
 
 notes_service = NotesService()
