@@ -23,7 +23,5 @@ class Settings(BaseSettings):
     azure_openai_embedding_deployment_name: str
     admin_email: str 
     admin_password: str
-    azure_search_key: str
-    azure_search_endpoint: str
 
 settings = Settings()
