@@ -5,8 +5,8 @@ from app.database import get_db
 from app.dependencies import get_current_user, get_current_admin
 from app.models.user import User
 from app.schemas.assessments import (
-    AssignmentRequest, AssignmentCreate, AssignmentSubmission, AssignmentGrade,
-    PracticeQuizRequest, QuizAttemptRequest
+    AssignmentCreate, AssignmentSubmission, 
+    PracticeQuizRequest, QuizAttemptRequest, AdminGradeReview
 )
 from app.services.assessments import assessment_service
 from app.models.assessments import PracticeQuiz
@@ -15,6 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assessments", tags=["assessments"])
+
 @router.post("/quiz/submit")
 async def submit_subtopic_quiz(
     request: QuizAttemptRequest,
@@ -63,6 +64,7 @@ async def get_subtopic_quiz(
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail = f"Failed to get subtopic quiz {str(e)}"
         )
+
 @router.get("/subtopic/{subtopic_id}/attempt")
 async def get_quiz_attempt_status(
     subtopic_id: int, 
@@ -84,6 +86,7 @@ async def get_quiz_attempt_status(
             status_code =status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail = f"Failed to get attempt status {str(e)}"
         )
+
 @router.get("/quiz/history")
 async def get_quiz_history(
     db: Session = Depends(get_db),
@@ -104,33 +107,60 @@ async def get_quiz_history(
             detail=f"Failed to get quiz history: {str(e)}"
         )
 
-# Assignment Endpoints - Admin (Generate → Review → Publish workflow)
-@router.post("/assignments/generate")
-async def generate_assignment(
-    request: AssignmentRequest,
+# Assignment Endpoints - Admin (Manual Create → Edit → Publish → AI Grade → Admin Review workflow)
+@router.get("/assignments/{assignment_id}/result")
+async def get_assignment_result(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get student's assignment result with correct answers and explanations"""
+    try:
+        result = assessment_service.get_student_assignment_result(
+            db, current_user.id, assignment_id
+        )
+        
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Assignment result not found or not yet graded"
+            )
+        
+        return {
+            "success": True,
+            **result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting assignment result: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get assignment result: {str(e)}"
+        )
+# NEW: Manual assignment creation
+@router.post("/assignments/create")
+async def create_assignment(
+    assignment: AssignmentCreate,
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_current_admin)
 ):
-    """Generate assignment with AI and create automatically"""
+    """Admin creates assignment manually"""
     try:
-        assignment = await assessment_service.generate_and_create_assignment(
-            db, current_admin.id, request.description, request.based_on_topics
+        assignment_id = assessment_service.create_assignment(
+            db, current_admin.id, assignment
         )
         
         return {
             "success": True,
-            "assignment_id": assignment.id,
-            "title": assignment.title,
-            "description": assignment.description,
-            "questions": assignment.questions,
-            "total_marks": assignment.total_marks,
-            "status": "generated_ready_for_review"
+            "assignment_id": assignment_id,
+            "message": "Assignment created successfully"
         }
     except Exception as e:
-        logger.error(f"Error generating assignment: {str(e)}")
+        logger.error(f"Error creating assignment: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate assignment: {str(e)}"
+            detail=f"Failed to create assignment: {str(e)}"
         )
 
 @router.put("/assignments/{assignment_id}/edit")
@@ -217,8 +247,7 @@ async def get_assignment_submissions(
         return {
             "success": True,
             "assignment_id": assignment_id,
-            "submissions": submissions,
-            "total_submissions": len(submissions)
+            **submissions
         }
     except Exception as e:
         logger.error(f"Error getting submissions: {str(e)}")
@@ -226,6 +255,7 @@ async def get_assignment_submissions(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get submissions: {str(e)}"
         )
+
 @router.get("/assignments/admin")
 async def get_admin_assignments(
     db: Session = Depends(get_db),
@@ -244,17 +274,19 @@ async def get_admin_assignments(
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail = f"Failed to get assignments: {str(e)}"
         )
-@router.post("/assignments/submissions/{submission_id}/grade")
-async def grade_assignment_submission(
+
+# NEW: Admin grade review endpoint
+@router.put("/assignments/submissions/{submission_id}/review-grades")
+async def review_ai_grades(
     submission_id: int,
-    grade: AssignmentGrade,
+    admin_review: AdminGradeReview,
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_current_admin)
 ):
-    """Grade assignment submission"""
+    """Admin reviews and adjusts AI-awarded grades"""
     try:
-        success = assessment_service.grade_assignment_submission(
-            db, submission_id, grade.awarded_marks, grade.feedback
+        success = assessment_service.update_admin_grades(
+            db, submission_id, admin_review
         )
         
         if not success:
@@ -265,17 +297,36 @@ async def grade_assignment_submission(
         
         return {
             "success": True,
-            "message": "Submission graded successfully",
-            "submission_id": submission_id,
-            "awarded_marks": grade.awarded_marks
+            "message": "Grades reviewed and updated successfully",
+            "submission_id": submission_id
         }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error grading submission: {str(e)}")
+        logger.error(f"Error reviewing grades: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to grade submission: {str(e)}"
+            detail=f"Failed to review grades: {str(e)}"
+        )
+
+# NEW: Get pending submissions count
+@router.get("/assignments/pending-submissions")
+async def get_pending_submissions(
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
+    """Get count of submissions pending admin review"""
+    try:
+        counts = assessment_service.get_pending_submissions_count(db, current_admin.id)
+        return {
+            "success": True,
+            **counts
+        }
+    except Exception as e:
+        logger.error(f"Error getting pending submissions: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get pending submissions: {str(e)}"
         )
 
 # Assignment Endpoints - Student
@@ -300,6 +351,7 @@ async def get_available_assignments(
             detail=f"Failed to get assignments: {str(e)}"
         )
 
+# UPDATED: Submit assignment with AI grading
 @router.post("/assignments/{assignment_id}/submit")
 async def submit_assignment(
     assignment_id: int,
@@ -307,9 +359,9 @@ async def submit_assignment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Submit assignment answers"""
+    """Submit assignment answers and trigger AI grading"""
     try:
-        success = assessment_service.submit_assignment(
+        success = await assessment_service.submit_assignment(
             db, current_user.id, assignment_id, submission.answers
         )
         
@@ -321,7 +373,7 @@ async def submit_assignment(
         
         return {
             "success": True,
-            "message": "Assignment submitted successfully",
+            "message": "Assignment submitted and AI-graded successfully",
             "assignment_id": assignment_id
         }
     except HTTPException:
@@ -333,7 +385,7 @@ async def submit_assignment(
             detail=f"Failed to submit assignment: {str(e)}"
         )
 
-# Practice Quiz Endpoints - Student
+# Practice Quiz Endpoints - Student (KEEP AS IS)
 @router.post("/practice/generate")
 async def generate_practice_quiz(
     request: PracticeQuizRequest,

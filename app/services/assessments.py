@@ -5,7 +5,7 @@ from sqlalchemy.sql import func
 from app.models.assessments import (
     SubtopicAssessment, QuizAttempt, Assignment, AssignmentSubmission, PracticeQuiz
 )
-from app.schemas.assessments import QuestionSchema
+from app.schemas.assessments import QuestionSchema, AdminGradeReview, AssignmentCreate
 from app.models.notes import Topic, Subtopic
 from app.utils.azure_openai import azure_client
 import logging
@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 class AssessmentService:
     
-    # Subtopic Quiz Management (for generation workflow)
     @staticmethod
     def store_subtopic_quiz(db: Session, subtopic_id: int, quiz_questions: List[Dict[str, Any]]) -> None:
         """Store quiz questions generated alongside content"""
@@ -210,43 +209,30 @@ class AssessmentService:
             logger.error(f"Error getting quiz history: {str(e)}")
             return []
     
-    # Assignment Management (Generate → Review → Publish workflow)
     @staticmethod
-    async def generate_and_create_assignment(db: Session, admin_id: int, description: str, 
-                                           based_on_topics: List[int] = None) -> Assignment:
-        """Generate assignment with AI and create it automatically"""
+    def create_assignment(db: Session, admin_id: int, assignment_data: AssignmentCreate) -> int:
+        """Create assignment manually by admin"""
         try:
-            # Get context from topics if provided
-            context = ""
-            if based_on_topics:
-                topics = db.query(Topic).filter(Topic.id.in_(based_on_topics)).all()
-                for topic in topics:
-                    subtopics = db.query(Subtopic).filter(
-                        Subtopic.topic_id == topic.id,
-                        Subtopic.is_published == True
-                    ).all()
-                    for sub in subtopics:
-                        if sub.content:
-                            context += f"{sub.title}: {sub.content[:500]}...\n"
+            # Convert QuestionSchema objects to dictionaries
+            questions_dict = [
+                {
+                    "question": q.question,
+                    "marks": q.marks,
+                    "guidance": q.guidance,
+                    "marking_criteria": q.marking_criteria
+                }
+                for q in assignment_data.questions
+            ]
             
-            # Generate questions
-            assignment_data = await azure_client.generate_assignment_questions(
-                description=description,
-                number_of_questions=5,
-                difficulty_level="medium",
-                context_content=context
-            )
-            
-            # Auto-create assignment
-            total_marks = assignment_data.get('total_marks', 100)
-            title = assignment_data.get('suggested_title', f"Assignment: {description[:50]}")
+            total_marks = sum(q.marks for q in assignment_data.questions)
             
             assignment = Assignment(
-                title=title,
-                description=description,
-                questions=assignment_data['questions'],
+                title=assignment_data.title,
+                description=assignment_data.description,
+                questions=questions_dict,
                 total_marks=total_marks,
                 created_by=admin_id,
+                due_date=assignment_data.due_date,
                 is_published=False  # Created but not published
             )
             
@@ -254,11 +240,11 @@ class AssessmentService:
             db.commit()
             db.refresh(assignment)
             
-            logger.info(f"Generated and created assignment: {title}")
-            return assignment
+            logger.info(f"Assignment created manually: {assignment.title}")
+            return assignment.id
             
         except Exception as e:
-            logger.error(f"Error generating assignment: {str(e)}")
+            logger.error(f"Error creating assignment: {str(e)}")
             db.rollback()
             raise
     
@@ -307,6 +293,7 @@ class AssessmentService:
             logger.error(f"Error editing assignment: {str(e)}")
             db.rollback()
             return False
+    
     @staticmethod
     def publish_assignment(db: Session, assignment_id: int, admin_id: int) -> bool:
         """Publish assignment to students"""
@@ -344,11 +331,20 @@ class AssessmentService:
                     AssignmentSubmission.student_id == student_id
                 ).first()
                 
+                student_questions = [
+                    {
+                        "question": q["question"],
+                        "marks": q["marks"],
+                        "guidance": q.get("guidance", "")
+                    }
+                    for q in assignment.questions
+                ]
+                
                 result.append({
                     "id": assignment.id,
                     "title": assignment.title,
                     "description": assignment.description,
-                    "questions": assignment.questions,
+                    "questions": student_questions, 
                     "total_marks": assignment.total_marks,
                     "due_date": assignment.due_date,
                     "submitted": submission is not None,
@@ -363,8 +359,8 @@ class AssessmentService:
             return []
     
     @staticmethod
-    def submit_assignment(db: Session, student_id: int, assignment_id: int, answers: List[str]) -> bool:
-        """Submit assignment"""
+    async def submit_assignment(db: Session, student_id: int, assignment_id: int, answers: List[str]) -> bool:
+        """Submit assignment and trigger AI grading"""
         try:
             # Check if already submitted
             existing = db.query(AssignmentSubmission).filter(
@@ -375,26 +371,40 @@ class AssessmentService:
             if existing:
                 raise ValueError("Assignment already submitted. Only one submission allowed per assignment.")
             
+            # Get assignment questions for AI grading
+            assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+            if not assignment:
+                raise ValueError("Assignment not found")
+            
+            # Trigger AI grading
+            ai_grading_result = await azure_client.grade_assignment_submission(
+                assignment.questions, answers
+            )
+            
+            # Create submission with AI grades and status
             submission = AssignmentSubmission(
                 assignment_id=assignment_id,
                 student_id=student_id,
-                answers=answers
+                answers=answers,
+                ai_grades=ai_grading_result,
+                awarded_marks=ai_grading_result['total_ai_marks'],
+                status="ai_graded"  # Set status after AI grading
             )
             
             db.add(submission)
             db.commit()
             
-            logger.info(f"Assignment {assignment_id} submitted by student {student_id}")
+            logger.info(f"Assignment {assignment_id} submitted by student {student_id} and AI-graded with {ai_grading_result['total_ai_marks']}/{ai_grading_result['total_max_marks']} marks")
             return True
             
         except Exception as e:
             logger.error(f"Error submitting assignment: {str(e)}")
             db.rollback()
-            raise  # Changed from return False to raise
+            raise
     
     @staticmethod
     def get_assignment_submissions(db: Session, assignment_id: int, admin_id: int) -> Dict[str, Any]:
-        """Get assignment with questions AND submissions for marking"""
+        """Get assignment with questions AND submissions for admin review"""
         try:
             # Get assignment with questions
             assignment = db.query(Assignment).filter(
@@ -405,7 +415,7 @@ class AssessmentService:
             if not assignment:
                 return {"assignment": None, "submissions": []}
             
-            # Get submissions ordered by submission time (for consistent indexing)
+            # Get submissions with AI grades
             submissions = db.query(AssignmentSubmission).filter(
                 AssignmentSubmission.assignment_id == assignment_id
             ).order_by(AssignmentSubmission.submitted_at.asc()).all()
@@ -424,23 +434,82 @@ class AssessmentService:
                         "student_id": sub.student_id,
                         "answers": sub.answers,
                         "submitted_at": sub.submitted_at,
+                        "ai_grades": sub.ai_grades,
                         "awarded_marks": sub.awarded_marks,
                         "feedback": sub.feedback,
-                        "graded": sub.graded_at is not None
+                        "status": sub.status,
+                        "graded_at": sub.graded_at,
+                        "needs_review": sub.status == "ai_graded",
+                        "completed": sub.status == "admin_reviewed"
                     } for sub in submissions
                 ]
             }
         except Exception as e:
-            logger.error(f"Error getting assignment for marking: {str(e)}")
+            logger.error(f"Error getting assignment for admin review: {str(e)}")
             return {"assignment": None, "submissions": []}
-        
+    @staticmethod
+    def get_student_assignment_result(db: Session, student_id: int, assignment_id: int) -> Optional[Dict[str, Any]]:
+        """Get student's graded assignment result with correct answers"""
+        try:
+            # Get the submission
+            submission = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id == assignment_id,
+                AssignmentSubmission.student_id == student_id
+            ).first()
+            
+            if not submission or not submission.ai_grades:
+                return None
+            
+            # Get assignment details
+            assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+            if not assignment:
+                return None
+            
+            # Build question results
+            question_results = []
+            ai_grades = submission.ai_grades
+            
+            for i, question in enumerate(assignment.questions):
+                if i < len(ai_grades['question_grades']):
+                    grade_info = ai_grades['question_grades'][i]
+                    
+                    # Use admin marks if available, otherwise AI marks
+                    awarded_marks = grade_info.get('admin_awarded_marks', grade_info.get('ai_awarded_marks', 0))
+                    
+                    question_results.append({
+                        "question_text": question['question'],
+                        "max_marks": question['marks'],
+                        "student_answer": submission.answers[i] if i < len(submission.answers) else "",
+                        "awarded_marks": awarded_marks,
+                        "ai_explanation": grade_info.get('ai_explanation', ''),
+                        "correct_answer": grade_info.get('correct_answer', 'No model answer available'),
+                        "admin_notes": grade_info.get('admin_notes')
+                    })
+            
+            percentage = (submission.awarded_marks / assignment.total_marks) * 100 if assignment.total_marks > 0 else 0
+            
+            return {
+                "assignment_id": assignment.id,
+                "assignment_title": assignment.title,
+                "total_marks": assignment.total_marks,
+                "awarded_marks": submission.awarded_marks,
+                "percentage": round(percentage, 1),
+                "status": submission.status,
+                "submitted_at": submission.submitted_at,
+                "graded_at": submission.graded_at,
+                "question_results": question_results
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting student assignment result: {str(e)}")
+            return None   
     @staticmethod
     def get_admin_assignments(db: Session, admin_id: int) -> List[Dict[str, Any]]:
         """Get assignments created by admin with submission counts"""
         try:
+            # REMOVE the is_published filter to show ALL assignments by admin
             assignments = db.query(Assignment).filter(
-                Assignment.created_by == admin_id,  
-                Assignment.is_published == True
+                Assignment.created_by == admin_id  # <-- REMOVED is_published == True filter
             ).order_by(Assignment.created_at.desc()).all()
             
             result = []
@@ -451,7 +520,7 @@ class AssessmentService:
                 
                 graded_count = db.query(AssignmentSubmission).filter(
                     AssignmentSubmission.assignment_id == assignment.id,
-                    AssignmentSubmission.graded_at.isnot(None)
+                    AssignmentSubmission.status == "admin_reviewed"
                 ).count()
                 
                 result.append({
@@ -459,7 +528,7 @@ class AssessmentService:
                     "title": assignment.title,
                     "description": assignment.description,
                     "total_marks": assignment.total_marks,
-                    "is_published": assignment.is_published,
+                    "is_published": assignment.is_published,  # This will show True/False
                     "due_date": assignment.due_date,
                     "created_at": assignment.created_at,
                     "submission_count": submission_count,
@@ -471,9 +540,10 @@ class AssessmentService:
         except Exception as e:
             logger.error(f"Error getting admin assignments: {str(e)}")
             return []
+    
     @staticmethod
-    def grade_assignment_submission(db: Session, submission_id: int, awarded_marks: int, feedback: str = None) -> bool:
-        """Grade assignment submission"""
+    def update_admin_grades(db: Session, submission_id: int, admin_review: AdminGradeReview) -> bool:
+        """Admin reviews and updates AI grades"""
         try:
             submission = db.query(AssignmentSubmission).filter(
                 AssignmentSubmission.id == submission_id
@@ -482,20 +552,62 @@ class AssessmentService:
             if not submission:
                 return False
             
-            submission.awarded_marks = awarded_marks
-            submission.feedback = feedback
-            submission.graded_at = func.now()
+            # Update AI grades with admin overrides
+            ai_grades = submission.ai_grades
+            total_admin_marks = 0
+            
+            for admin_grade in admin_review.question_grades:
+                question_idx = admin_grade.question_index
+                if question_idx < len(ai_grades['question_grades']):
+                    ai_grades['question_grades'][question_idx]['admin_awarded_marks'] = admin_grade.admin_awarded_marks or admin_grade.ai_awarded_marks
+                    ai_grades['question_grades'][question_idx]['admin_notes'] = admin_grade.admin_notes
+                    total_admin_marks += ai_grades['question_grades'][question_idx]['admin_awarded_marks']
+            
+            # Update submission with final marks and status
+            submission.ai_grades = ai_grades
+            submission.awarded_marks = total_admin_marks
+            submission.status = "admin_reviewed"  # Update status
+            submission.graded_at = func.now()     # Set final grading timestamp
             
             db.commit()
-            logger.info(f"Submission {submission_id} graded with {awarded_marks} marks")
+            logger.info(f"Admin updated grades for submission {submission_id}: {total_admin_marks} marks")
             return True
             
         except Exception as e:
-            logger.error(f"Error grading submission: {str(e)}")
+            logger.error(f"Error updating admin grades: {str(e)}")
             db.rollback()
             return False
     
-    # Practice Quiz Management
+    # NEW: Get pending submissions count
+    @staticmethod
+    def get_pending_submissions_count(db: Session, admin_id: int) -> Dict[str, int]:
+        """Get count of submissions pending admin review"""
+        try:
+            # Get assignments created by this admin
+            admin_assignments = db.query(Assignment.id).filter(
+                Assignment.created_by == admin_id,
+                Assignment.is_published == True
+            ).subquery()
+            
+            # Count submissions by status
+            ai_graded_count = db.query(AssignmentSubmission).join(
+                admin_assignments, AssignmentSubmission.assignment_id == admin_assignments.c.id
+            ).filter(AssignmentSubmission.status == "ai_graded").count()
+            
+            admin_reviewed_count = db.query(AssignmentSubmission).join(
+                admin_assignments, AssignmentSubmission.assignment_id == admin_assignments.c.id
+            ).filter(AssignmentSubmission.status == "admin_reviewed").count()
+            
+            return {
+                "pending_review": ai_graded_count,
+                "completed": admin_reviewed_count,
+                "total": ai_graded_count + admin_reviewed_count
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting pending submissions count: {str(e)}")
+            return {"pending_review": 0, "completed": 0, "total": 0}
+
     @staticmethod
     async def generate_practice_quiz(db: Session, student_id: int, topic_description: str, num_questions: int = 10) -> int:
         """Generate practice quiz"""

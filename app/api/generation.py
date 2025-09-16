@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import Dict, Any
+from typing import Dict, Any,Optional
 from app.database import get_db
 from app.dependencies import get_current_admin
 from app.schemas.generation import (
@@ -97,28 +97,63 @@ async def generate_next_subtopic(
 async def edit_subtopic_content(
     session_id: int,
     request: EditContentRequest,
+    subtopic_order: Optional[int] = None,  # ADD THIS PARAMETER
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Edit current subtopic content - replaces existing content completely"""
+    """Edit subtopic content - can specify which subtopic to edit"""
     try:
-        result = await generation_service.edit_subtopic_content(
-            db=db,
-            session_id=session_id,
-            title=request.title,
-            content=request.content
-        )
-        return result
-    except ValueError as e:
-        logger.error(f"Error {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+        session = db.query(GenerationSessionModel).filter(
+            GenerationSessionModel.id == session_id
+        ).first()
+        
+        if not session:
+            raise ValueError("Generation session not found")
+        
+        # Use specified subtopic or default to current
+        target_subtopic_order = subtopic_order or session.current_subtopic
+        
+        # Find the target subtopic to edit
+        from app.models.notes import Subtopic
+        target_subtopic = db.query(Subtopic).filter(
+            Subtopic.topic_id == session.topic_id,
+            Subtopic.order == target_subtopic_order
+        ).first()
+        
+        if not target_subtopic:
+            raise ValueError(f"Subtopic {target_subtopic_order} not found")
+        
+        # Update the target subtopic content directly
+        target_subtopic.title = request.title
+        target_subtopic.content = request.content
+        
+        # Re-process vector embeddings
+        from app.models.content_chunks import ContentChunk
+        db.query(ContentChunk).filter(
+            ContentChunk.subtopic_id == target_subtopic.id
+        ).delete()
+        
+        # Re-chunk and re-embed the new content
+        from app.services.chunking_service import chunking_service
+        from app.services.vector_service import vector_service
+        chunks = chunking_service.chunk_content(request.content, request.title)
+        await vector_service.store_content_chunks(db, target_subtopic.id, chunks)
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Subtopic content updated successfully",
+            "subtopic_title": request.title,
+            "content": request.content,
+            "edited_subtopic": target_subtopic_order,
+            "total_subtopics": session.total_subtopics
+        }
+        
     except Exception as e:
-        logger.error(f"Error {str(e)}")
+        logger.error(f"Error editing subtopic: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to edit subtopic content: {str(e)}"
+            detail=f"Failed to edit subtopic: {str(e)}"
         )
 
 # AI-Consult endpoint - SUSPENDED (temporarily disabled)

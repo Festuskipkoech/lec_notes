@@ -200,69 +200,74 @@ RETURN AS JSON:
             "quiz_questions": validated_questions
         }
 
-    async def generate_assignment_questions(self, description: str, number_of_questions: int, 
-                                          difficulty_level: str, context_content: str = "", 
-                                          total_marks: int = 100) -> Dict[str, Any]:
-        """Generate assignment questions (Q&A format) based on description and topic context"""
+    # NEW: AI Grading Method
+    async def grade_assignment_submission(self, assignment_questions: List[Dict[str, Any]], 
+                                        student_answers: List[str]) -> Dict[str, Any]:
+        """Grade assignment submission question by question"""
         
-        context_section = f"\n\nCONTEXT FROM PUBLISHED TOPICS:\n{context_content}" if context_content else ""
+        # Format assignment data for AI
+        grading_data = []
+        for i, (question, answer) in enumerate(zip(assignment_questions, student_answers)):
+            grading_data.append({
+                "question_number": i + 1,
+                "question_text": question['question'],
+                "max_marks": question['marks'],
+                "marking_criteria": question.get('marking_criteria', 'Grade based on accuracy and completeness'),
+                "guidance": question.get('guidance', ''),
+                "student_answer": answer
+            })
         
         prompt = f"""
-        Create assignment questions based on this description: {description}
-        
-        Requirements:
-        - {number_of_questions} questions total
-        - Difficulty level: {difficulty_level}
-        - Total marks: {total_marks}
-        - Question format: Open-ended/essay style (not multiple choice)
-        
-        {context_section}
-        
-        Each question should:
-        - Test deeper understanding and application
-        - Require thoughtful, detailed answers
-        - Be appropriate for the {difficulty_level} level
-        - Have clear marking criteria
-        - Allocate appropriate marks based on complexity
-        
-        Return as JSON in this format:
+        You are grading an assignment submission. Grade each question based on its marking criteria and award marks proportionally.
+
+        Assignment Data: {json.dumps(grading_data, indent=2)}
+
+        For each question:
+        1. Read the question, marking criteria, and student answer
+        2. Award marks out of the maximum available
+        3. Provide clear explanation for your grading decision
+        4. Provide the correct/model answer for student learning
+        5. Be fair but thorough in assessment
+
+        Return ONLY valid JSON in this exact format:
         {{
-          "suggested_title": "Assignment title",
-          "total_marks": {total_marks},
-          "questions": [
+        "total_ai_marks": total_marks_awarded,
+        "total_max_marks": sum_of_all_max_marks,
+        "question_grades": [
             {{
-              "question": "Question text here?",
-              "marks": 20,
-              "guidance": "What students should focus on in their answer",
-              "marking_criteria": "Key points to look for when grading"
+            "question_index": 0,
+            "ai_awarded_marks": marks_awarded,
+            "max_marks": maximum_possible_marks,
+            "ai_explanation": "Detailed explanation of why this grade was awarded",
+            "correct_answer": "The complete correct/model answer for this question"
             }}
-          ]
+        ]
         }}
         """
         
         response = self.client.chat.completions.create(
             model=settings.azure_openai_deployment_name,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.6,
-            max_tokens=3000
+            temperature=0.3,
+            max_tokens=4000
         )
         
         content_response = response.choices[0].message.content.strip()
         
         try:
-            assignment_data = json.loads(content_response)
+            grading_result = json.loads(content_response)
         except json.JSONDecodeError:
             import re
             json_match = re.search(r'\{.*\}', content_response, re.DOTALL)
             if json_match:
-                assignment_data = json.loads(json_match.group())
+                grading_result = json.loads(json_match.group())
             else:
-                raise ValueError("Could not extract valid JSON from AI response")
+                raise ValueError("Could not extract valid JSON from AI grading response")
         
-        if not self._validate_assignment_data(assignment_data):
-            raise ValueError("Generated assignment data structure is invalid")
+        if not self._validate_grading_result(grading_result, len(assignment_questions)):
+            raise ValueError("Invalid grading result structure from AI")
         
-        return assignment_data
+        return grading_result
 
     async def generate_practice_quiz(self, topic_description: str, number_of_questions: int, 
                                    difficulty_level: str) -> Dict[str, Any]:
@@ -307,7 +312,7 @@ RETURN AS JSON:
             quiz_data = json.loads(content_response)
         except json.JSONDecodeError:
             import re
-            json_match = re.search(r'\{.*\}', content_response, re.DOTALL)
+            json_match = re.search(r'\{.*\}', content_response, re.dotall)
             if json_match:
                 quiz_data = json.loads(json_match.group())
             else:
@@ -389,27 +394,30 @@ Format your response as JSON with keys: "suggestions" and "recommended_changes\"
         
         return True
     
-    def _validate_assignment_data(self, assignment_data: Dict[str, Any]) -> bool:
-        """Validate that assignment data has the required structure"""
-        if not isinstance(assignment_data, dict):
+    # NEW: Validation for AI grading results
+    def _validate_grading_result(self, result: Dict[str, Any], expected_questions: int) -> bool:
+        """Validate AI grading result structure"""
+        if not isinstance(result, dict):
             return False
         
-        if 'questions' not in assignment_data or not isinstance(assignment_data['questions'], list):
-            return False
-        
-        for question in assignment_data['questions']:
-            if not isinstance(question, dict):
+        required_fields = ['total_ai_marks', 'total_max_marks', 'question_grades']
+        for field in required_fields:
+            if field not in result:
                 return False
-            
-            required_fields = ['question', 'marks']
-            for field in required_fields:
-                if field not in question:
+        
+        if len(result['question_grades']) != expected_questions:
+            return False
+        
+        for grade in result['question_grades']:
+            required_grade_fields = ['question_index', 'ai_awarded_marks', 'max_marks', 'ai_explanation']
+            for field in required_grade_fields:
+                if field not in grade:
                     return False
             
-            if not isinstance(question['marks'], int) or question['marks'] <= 0:
+            if not isinstance(grade['ai_awarded_marks'], int) or grade['ai_awarded_marks'] < 0:
                 return False
             
-            if not isinstance(question['question'], str) or len(question['question'].strip()) < 10:
+            if grade['ai_awarded_marks'] > grade['max_marks']:
                 return False
         
         return True

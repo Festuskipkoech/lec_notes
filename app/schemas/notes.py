@@ -20,6 +20,7 @@ class TopicResponse(BaseModel):
     level: str
     total_subtopics: int
     subtopics: List[SubtopicResponse]
+    session_id: Optional[int] = None
     created_at: datetime
     
     class Config:
@@ -27,6 +28,7 @@ class TopicResponse(BaseModel):
 
 class TopicListResponse(BaseModel):
     id: int
+    session_id: Optional[int] = None  
     title: str
     level: str
     total_subtopics: int

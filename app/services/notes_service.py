@@ -12,10 +12,8 @@ class NotesService:
     def get_topics_for_user(db: Session, user: User) -> List[TopicListResponse]:
         """Get topics based on user role"""
         if user.role == UserRole.admin:
-            # Admins see all topics
             topics = db.query(Topic).order_by(desc(Topic.created_at)).all()
         else:
-            # Students only see topics with published content
             topics = db.query(Topic).filter(
                 Topic.subtopics.any(Subtopic.is_published == True)
             ).order_by(desc(Topic.created_at)).all()
@@ -27,17 +25,23 @@ class NotesService:
                 Subtopic.is_published == True
             ).count()
             
+            # ADD THIS: Get the generation session for this topic
+            session = db.query(GenerationSession).filter(
+                GenerationSession.topic_id == topic.id
+            ).first()
+            
             result.append(TopicListResponse(
                 id=topic.id,
                 title=topic.title,
                 level=topic.level,
                 total_subtopics=topic.total_subtopics,
                 published_subtopics=published_count,
+                session_id=session.id if session else None,  # ADD THIS LINE
                 created_at=topic.created_at
             ))
         
         return result
-    
+
     @staticmethod
     def get_topic_details(db: Session, topic_id: int, user: User) -> Optional[TopicResponse]:
         """Get detailed topic with subtopics"""
