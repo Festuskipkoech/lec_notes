@@ -258,12 +258,13 @@ class AssessmentService:
         questions: List[QuestionSchema],      
         due_date: Optional[datetime] = None   
     ) -> bool:
-        """Edit assignment before publishing"""
+        """Edit assignment - now allows editing published assignments"""
         try:
+            # REMOVE the is_published == False restriction
             assignment = db.query(Assignment).filter(
                 Assignment.id == assignment_id,
-                Assignment.created_by == admin_id,
-                Assignment.is_published == False
+                Assignment.created_by == admin_id
+                # Removed: Assignment.is_published == False
             ).first()
             
             if not assignment:
@@ -287,6 +288,7 @@ class AssessmentService:
             assignment.total_marks = sum(q.marks for q in questions)
             
             db.commit()
+            logger.info(f"Assignment {assignment_id} edited (was_published: {assignment.is_published})")
             return True
             
         except Exception as e:
