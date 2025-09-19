@@ -2,7 +2,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies.dependencies import get_current_user
 from app.schemas.auth import UserCreate, UserLogin, Token, TokenRefresh, User
 from app.services.auth_service import auth_service
 from app.models.user import User as UserModel

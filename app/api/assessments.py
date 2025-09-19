@@ -1,15 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
 from app.database import get_db
-from app.dependencies import get_current_user, get_current_admin
+from app.dependencies.dependencies import get_current_user, get_current_admin
 from app.models.user import User
 from app.schemas.assessments import (
     AssignmentCreate, AssignmentSubmission, 
     PracticeQuizRequest, QuizAttemptRequest, AdminGradeReview, SubtopicQuizEdit
 )
 from app.services.assessments import assessment_service
-from app.models.assessments import PracticeQuiz
+from app.models.assessments import PracticeQuiz, Assignment
+from app.websocket.notifications import notification_service
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -228,7 +229,6 @@ async def edit_assignment(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to edit assignment: {str(e)}"
         )
-
 @router.post("/assignments/{assignment_id}/publish")
 async def publish_assignment(
     assignment_id: int,
@@ -245,6 +245,11 @@ async def publish_assignment(
                 detail="Assignment not found or access denied"
             )
         
+        # Get assignment title for notification
+        assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+        if assignment:
+            await notification_service.notify_new_assignment(assignment.title)
+        
         return {
             "success": True,
             "message": "Assignment published successfully",
@@ -258,7 +263,6 @@ async def publish_assignment(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to publish assignment: {str(e)}"
         )
-
 @router.get("/assignments/{assignment_id}/submissions")
 async def get_assignment_submissions(
     assignment_id: int,
@@ -302,13 +306,11 @@ async def get_admin_assignments(
             detail = f"Failed to get assignments: {str(e)}"
         )
 
-# NEW: Admin grade review endpoint
 @router.put("/assignments/submissions/{submission_id}/review-grades")
 async def review_ai_grades(
     submission_id: int,
     admin_review: AdminGradeReview,
     db: Session = Depends(get_db),
-    current_admin: User = Depends(get_current_admin)
 ):
     """Admin reviews and adjusts AI-awarded grades"""
     try:
@@ -321,6 +323,19 @@ async def review_ai_grades(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Submission not found"
             )
+        
+        # Get submission and assignment info for notification
+        submission = db.query(AssignmentSubmission).filter(
+            AssignmentSubmission.id == submission_id
+        ).first()
+        if submission:
+            assignment = db.query(Assignment).filter(
+                Assignment.id == submission.assignment_id
+            ).first()
+            if assignment:
+                await notification_service.notify_grade_available(
+                    submission.student_id, assignment.title
+                )
         
         return {
             "success": True,

@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies.dependencies import get_current_user
 from app.schemas.notes import TopicResponse, TopicListResponse
 from app.services.notes_service import notes_service
+from app.websocket.notifications import notification_service
 from app.models.user import User
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -51,7 +52,14 @@ async def update_topic(
             detail="Topic not found"
         )
     
+    # Get updated topic title for notification
+    from app.models.notes import Topic
+    topic = db.query(Topic).filter(Topic.id == topic_id).first()
+    if topic:
+        await notification_service.notify_topic_updated(topic.title)
+    
     return {"message": "Topic updated successfully"}
+
 
 @router.delete("/admin/{topic_id}")
 async def delete_topic(

@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import Dict, Any,Optional
 from app.database import get_db
-from app.dependencies import get_current_admin
+from app.dependencies.dependencies import get_current_admin
 from app.schemas.generation import (
     GenerationStart, GenerationSession, EditContentRequest
 )
+from app.websocket.notifications import notification_service
 from app.services.generation_service import generation_service
 from app.models.user import User
 from app.models.generation import GenerationSession as GenerationSessionModel
@@ -210,7 +211,6 @@ async def edit_subtopic_content(
 #             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
 #             detail=f"AI consultation failed: {str(e)}"
 #         )
-
 @router.post("/{session_id}/publish")
 async def publish_subtopic(
     session_id: int,
@@ -219,6 +219,24 @@ async def publish_subtopic(
     """Publish current subtopic for student access"""
     try:
         result = await generation_service.publish_subtopic(db, session_id)
+        
+        # Get topic and subtopic info for notification
+        session = db.query(GenerationSessionModel).filter(
+            GenerationSessionModel.id == session_id
+        ).first()
+        if session:
+            from app.models.notes import Topic, Subtopic
+            topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
+            subtopic = db.query(Subtopic).filter(
+                Subtopic.topic_id == session.topic_id,
+                Subtopic.order == session.current_subtopic
+            ).first()
+            
+            if topic and subtopic:
+                await notification_service.notify_new_content(
+                    topic.title, subtopic.title
+                )
+        
         return result
     except ValueError as e:
         logger.error(f"Error {str(e)}")
@@ -232,7 +250,6 @@ async def publish_subtopic(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to publish subtopic: {str(e)}"
         )
-
 @router.get("/{session_id}/status", response_model=GenerationSession)
 async def get_generation_status(
     session_id: int,

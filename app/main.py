@@ -9,6 +9,8 @@ from app.api import auth, generation as generation_api, notes as notes_api
 # Import new assessment API  
 from app.api import assessments as assessment_api
 
+from app.api import websocket
+
 # Import models explicitly to avoid import errors
 try:
     from app.models.user import User
@@ -152,6 +154,7 @@ app.include_router(auth.router)
 app.include_router(generation_api.router)
 app.include_router(notes_api.router)
 app.include_router(assessment_api.router)
+app.include_router(websocket.router)
 
 @app.on_event("startup")
 async def startup_event():
