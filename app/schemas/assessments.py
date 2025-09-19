@@ -55,7 +55,9 @@ class AssignmentCreate(BaseModel):
         json_encoders = {
             datetime: lambda v: v.isoformat() if v else None
         }
-
+class SubtopicQuizEdit(BaseModel):
+    quiz_questions: List[Dict[str,Any]]
+    
 class AssignmentSubmission(BaseModel):
     answers: List[str]
 

@@ -45,7 +45,6 @@ class AzureOpenAIClient:
         subtopics = [topic.split('.', 1)[-1].strip() for topic in subtopics]
         
         return subtopics
-
     async def generate_subtopic_with_vector_context(self, topic_title: str, subtopic_title: str, 
                                                 level: str, formatted_context: str, 
                                                 upcoming_concepts: List[str] = None) -> Dict[str, Any]:
@@ -64,48 +63,52 @@ class AzureOpenAIClient:
         # System prompt
         system_content = f"""You are a master educator creating a comprehensive course on "{topic_title}" for {level} learners.
 
-Your expertise:
-- Progressive concept building that flows naturally
-- Rich, memorable examples and applications  
-- Conceptual clarity without oversimplification
-- Consistent terminology throughout the course
-- Assessment design that tests understanding
+    Your expertise:
+    - Progressive concept building that flows naturally
+    - Rich, memorable examples and applications  
+    - Conceptual clarity without oversimplification
+    - Consistent terminology throughout the course
+    - Assessment design that tests understanding
 
-Your teaching philosophy:
-- Each concept builds naturally on established understanding
-- Use precise, consistent terminology 
-- Provide concrete examples before abstract concepts
-- Connect new ideas to previously covered foundations
-- Create assessments that test comprehension, not memorization
+    Your teaching philosophy:
+    - Each concept builds naturally on established understanding
+    - Use precise, consistent terminology 
+    - Provide concrete examples before abstract concepts
+    - Connect new ideas to previously covered foundations
+    - Create assessments that test comprehension, not memorization
 
-You must provide BOTH educational content AND quiz questions in a single response."""
+    CRITICAL: When creating quiz questions, you MUST distribute correct answers evenly across all options A, B, C, and D. Avoid bias toward any particular option.
+
+    You must provide BOTH educational content AND quiz questions in a single response."""
 
         if is_first_subtopic:
             upcoming_text = f"\nNote: This content will later connect to: {', '.join(upcoming_concepts)}" if upcoming_concepts else ""
             
             user_content = f"""CREATE EDUCATIONAL CONTENT AND QUIZ FOR: {subtopic_title}
 
-{upcoming_text}
+    {upcoming_text}
 
-You must provide BOTH:
-1. EDUCATIONAL CONTENT (700-900 words)
-2. QUIZ QUESTIONS (4-6 multiple choice questions)
+    You must provide BOTH:
+    1. EDUCATIONAL CONTENT (700-900 words)
+    2. QUIZ QUESTIONS (15-20 multiple choice questions)
 
-CONTENT REQUIREMENTS:
-- 700-900 words of substantive, engaging material
-- Jump directly into core concepts without meta-commentary
-- Include clear definitions and practical examples
-- Use precise, consistent terminology
+    CONTENT REQUIREMENTS:
+    - 700-900 words of substantive, engaging material
+    - Jump directly into core concepts without meta-commentary
+    - Include clear definitions and practical examples
+    - Use precise, consistent terminology
 
-QUIZ REQUIREMENTS:
-- 4-6 multiple choice questions with 4 options each
-- Test understanding of key concepts
-- Include explanations for correct answers
+    QUIZ REQUIREMENTS:
+    - 15-20 multiple choice questions with 4 options each
+    - Test understanding of key concepts
+    - Include explanations for correct answers
+    - IMPORTANT: Distribute correct answers evenly - roughly 25% each for A, B, C, and D options
+    - Vary question types: definitions, applications, problem-solving, analysis
 
-RETURN AS JSON:
-{{
-  "content": "Full educational content here...",
-  
+    RETURN AS JSON:
+    {{
+    "content": "Full educational content here...",
+    
         "quiz_questions": [
             {{
                 "id": unique_id,
@@ -115,44 +118,46 @@ RETURN AS JSON:
                 "explanation": "brief explanation of why this answer is correct"
             }}
         ]
-}}"""
+    }}"""
         
         else:
             upcoming_text = f"\nNote: This content will later connect to: {', '.join(upcoming_concepts)}" if upcoming_concepts else ""
             
             user_content = f"""{formatted_context}
 
-{upcoming_text}
+    {upcoming_text}
 
-CREATE EDUCATIONAL CONTENT AND QUIZ FOR: {subtopic_title}
+    CREATE EDUCATIONAL CONTENT AND QUIZ FOR: {subtopic_title}
 
-You must provide BOTH:
-1. EDUCATIONAL CONTENT (700-900 words)  
-2. QUIZ QUESTIONS (4-6 multiple choice questions)
+    You must provide BOTH:
+    1. EDUCATIONAL CONTENT (700-900 words)  
+    2. QUIZ QUESTIONS (15-20 multiple choice questions)
 
-CONTENT REQUIREMENTS:
-- 700-900 words of substantive material
-- Weave in relevant concepts from context naturally
-- Include clear definitions and examples
-- Use consistent terminology from previous content
+    CONTENT REQUIREMENTS:
+    - 700-900 words of substantive material
+    - Weave in relevant concepts from context naturally
+    - Include clear definitions and examples
+    - Use consistent terminology from previous content
 
-QUIZ REQUIREMENTS:
-- 4-6 multiple choice questions with 4 options each
-- Test understanding of new concepts AND connections to previous material
-- Include explanations for correct answers
+    QUIZ REQUIREMENTS:
+    - 15-20 multiple choice questions with 4 options each
+    - Test understanding of new concepts AND connections to previous material
+    - Include explanations for correct answers
+    - IMPORTANT: Distribute correct answers evenly - roughly 25% each for A, B, C, and D options
+    - Mix question types: recall, application, analysis, synthesis
 
-RETURN AS JSON:
-{{
-  "content": "Full educational content here...",
-  "quiz_questions": [
+    RETURN AS JSON:
     {{
-      "question": "Question text?",
-      "options": ["A", "B", "C", "D"], 
-      "correct_answer": "A" or "B" or "C" or "D",
-      "explanation": "Why this is correct"
-    }}
-  ]
-}}"""
+    "content": "Full educational content here...",
+    "quiz_questions": [
+        {{
+        "question": "Question text?",
+        "options": ["A", "B", "C", "D"], 
+        "correct_answer": "A" or "B" or "C" or "D",
+        "explanation": "Why this is correct"
+        }}
+    ]
+    }}"""
 
         messages = [
             {"role": "system", "content": system_content},
@@ -163,7 +168,7 @@ RETURN AS JSON:
             model=settings.azure_openai_deployment_name,
             messages=messages,
             temperature=0.5,
-            max_tokens=7000
+            max_tokens=10000  # Increased for more questions
         )
         
         content_response = response.choices[0].message.content.strip()
@@ -199,8 +204,7 @@ RETURN AS JSON:
             "content": content,
             "quiz_questions": validated_questions
         }
-
-    # NEW: AI Grading Method
+# NEW: AI Grading Method
     async def grade_assignment_submission(self, assignment_questions: List[Dict[str, Any]], 
                                         student_answers: List[str]) -> Dict[str, Any]:
         """Grade assignment submission question by question"""
@@ -312,7 +316,7 @@ RETURN AS JSON:
             quiz_data = json.loads(content_response)
         except json.JSONDecodeError:
             import re
-            json_match = re.search(r'\{.*\}', content_response, re.dotall)
+            json_match = re.search(r'\{.*\}', content_response, re.DOTALL)
             if json_match:
                 quiz_data = json.loads(json_match.group())
             else:

@@ -131,6 +131,75 @@ class AssessmentService:
             logger.error(f"Error submitting quiz: {str(e)}")
             db.rollback()
             raise    
+        
+    @staticmethod
+    def edit_subtopic_quiz(db: Session, subtopic_id: int, quiz_questions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Edit subtopic quiz questions independently of content"""
+        try:
+            # Validate subtopic exists
+            from app.models.notes import Subtopic
+            subtopic = db.query(Subtopic).filter(Subtopic.id == subtopic_id).first()
+            if not subtopic:
+                raise ValueError("Subtopic not found")
+            
+            # Validate quiz questions format
+            if not quiz_questions:
+                raise ValueError("At least one quiz question is required")
+            
+            # Validate each question structure
+            for i, question in enumerate(quiz_questions):
+                required_fields = ['question', 'options', 'correct_answer']
+                for field in required_fields:
+                    if field not in question:
+                        raise ValueError(f"Question {i+1} missing required field: {field}")
+                
+                if not isinstance(question['options'], list) or len(question['options']) != 4:
+                    raise ValueError(f"Question {i+1} must have exactly 4 options")
+                
+                # Validate correct_answer
+                correct_answer = question['correct_answer']
+                if isinstance(correct_answer, str):
+                    if correct_answer.upper() not in ['A', 'B', 'C', 'D']:
+                        raise ValueError(f"Question {i+1} correct_answer must be A, B, C, or D")
+                    # Convert to index
+                    question['correct_answer'] = ord(correct_answer.upper()) - ord('A')
+                elif isinstance(correct_answer, int):
+                    if not (0 <= correct_answer <= 3):
+                        raise ValueError(f"Question {i+1} correct_answer index must be 0-3")
+                else:
+                    raise ValueError(f"Question {i+1} correct_answer must be string (A-D) or int (0-3)")
+            
+            # Delete existing quiz questions
+            db.query(SubtopicAssessment).filter(
+                SubtopicAssessment.subtopic_id == subtopic_id
+            ).delete()
+            
+            # Store updated quiz questions
+            for q in quiz_questions:
+                assessment = SubtopicAssessment(
+                    subtopic_id=subtopic_id,
+                    question=q['question'],
+                    options=q['options'],
+                    correct_answer=q['correct_answer'],
+                    explanation=q.get('explanation', '')
+                )
+                db.add(assessment)
+            
+            db.commit()
+            
+            logger.info(f"Updated {len(quiz_questions)} quiz questions for subtopic {subtopic_id}")
+            
+            return {
+                "success": True,
+                "message": f"Successfully updated {len(quiz_questions)} quiz questions",
+                "subtopic_id": subtopic_id,
+                "questions_count": len(quiz_questions)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error editing subtopic quiz: {str(e)}")
+            db.rollback()
+            raise
     @staticmethod
     def get_student_quiz_attempt(db: Session, student_id: int, subtopic_id: int) -> Dict[str, Any]:
         """Check if student has already attempted this subtopic quiz"""

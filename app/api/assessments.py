@@ -6,7 +6,7 @@ from app.dependencies import get_current_user, get_current_admin
 from app.models.user import User
 from app.schemas.assessments import (
     AssignmentCreate, AssignmentSubmission, 
-    PracticeQuizRequest, QuizAttemptRequest, AdminGradeReview
+    PracticeQuizRequest, QuizAttemptRequest, AdminGradeReview, SubtopicQuizEdit
 )
 from app.services.assessments import assessment_service
 from app.models.assessments import PracticeQuiz
@@ -138,7 +138,34 @@ async def get_assignment_result(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get assignment result: {str(e)}"
         )
-# NEW: Manual assignment creation
+@router.put("/subtopic/{subtopic_id}/edit-quiz")
+async def edit_subtopic_quiz(
+    subtopic_id: int,
+    quiz_edit: SubtopicQuizEdit,
+    db: Session= Depends(get_db),
+    current_admin: Session = Depends(get_current_admin)
+):
+    try:
+        from app.models.notes import Subtopic, Topic
+        subtopic = db.query(Subtopic).join(Topic).filter(
+            Subtopic.id == subtopic_id,
+            Topic.creator_id == current_admin.id
+        ).first()
+        if not subtopic:
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN,
+                detail ="Access denied!"
+            )
+        result = assessment_service.edit_subtopic_quiz(
+            db, subtopic_id, quiz_edit.quiz_questions
+        )
+        return {
+            "success": True,
+            "subtopic_id": subtopic_id,
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Error editing subtopic quiz: {str(e)}")
 @router.post("/assignments/create")
 async def create_assignment(
     assignment: AssignmentCreate,
@@ -426,12 +453,13 @@ async def generate_practice_quiz(
 @router.post("/practice/{quiz_id}/submit")
 async def submit_practice_quiz(
     quiz_id: int,
-    answers: List[int],
+    submission: dict,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Submit practice quiz attempt"""
     try:
+        answers = submission.get('answers', [])
         result = assessment_service.submit_practice_quiz(
             db, quiz_id, current_user.id, answers
         )
