@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
 from app.init_admin import create_admin
+from app.config import settings
 
 # Import existing API routes
 from app.api import auth, generation as generation_api, notes as notes_api
@@ -143,7 +144,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=settings.allowed_origins, 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

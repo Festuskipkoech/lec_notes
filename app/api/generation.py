@@ -9,7 +9,7 @@ from app.schemas.generation import (
 from app.websocket.notifications import notification_service
 from app.services.generation_service import generation_service
 from app.models.user import User
-from app.models.generation import GenerationSession as GenerationSessionModel
+from app.models.generation import GenerationSession as GenerationSessionModel, GenerationStatus
 import logging
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/generation", tags=["generation"])
@@ -64,7 +64,81 @@ async def begin_generation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to begin generation: {str(e)}"
         )
-
+@router.post("/{session_id}/create-empty")
+async def create_empty_subtopic(
+    session_id: int,
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """Create empty subtopic when AI generation fails - allows manual content creation"""
+    try:
+        session = db.query(GenerationSessionModel).filter(
+            GenerationSessionModel.id == session_id
+        ).first()
+        
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Generation session not found"
+            )
+        
+        # Determine which subtopic to create
+        next_order = session.current_subtopic + 1 if session.current_subtopic > 0 else 1
+        
+        # Check if subtopic already exists
+        from app.models.notes import Subtopic
+        existing = db.query(Subtopic).filter(
+            Subtopic.topic_id == session.topic_id,
+            Subtopic.order == next_order
+        ).first()
+        
+        if existing:
+            # Return existing subtopic
+            return {
+                "content": existing.content or "",
+                "subtopic_title": existing.title,
+                "current_subtopic": next_order,
+                "total_subtopics": session.total_subtopics,
+                "quiz_questions": [],
+                "is_empty": True
+            }
+        
+        # Create new empty subtopic
+        subtopic_title = session.subtopic_titles[next_order - 1] if session.subtopic_titles and len(session.subtopic_titles) >= next_order else f"Subtopic {next_order}"
+        
+        new_subtopic = Subtopic(
+            topic_id=session.topic_id,
+            order=next_order,
+            title=subtopic_title,
+            content="",  # Empty content
+            is_published=False
+        )
+        
+        db.add(new_subtopic)
+        
+        # Update session
+        session.current_subtopic = next_order
+        session.status = GenerationStatus.generating
+        
+        db.commit()
+        db.refresh(new_subtopic)
+        
+        logger.info(f"Created empty subtopic {next_order} for manual editing in session {session_id}")
+        
+        return {
+            "content": "",
+            "subtopic_title": subtopic_title,
+            "current_subtopic": next_order,
+            "total_subtopics": session.total_subtopics,
+            "quiz_questions": [],
+            "is_empty": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating empty subtopic: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create empty subtopic: {str(e)}"
+        )
 @router.post("/{session_id}/next")
 async def generate_next_subtopic(
     session_id: int,
@@ -98,10 +172,10 @@ async def generate_next_subtopic(
 async def edit_subtopic_content(
     session_id: int,
     request: EditContentRequest,
-    subtopic_order: Optional[int] = None,  # ADD THIS PARAMETER
+    subtopic_order: Optional[int] = None,
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Edit subtopic content - can specify which subtopic to edit"""
+    """Edit subtopic content - creates subtopic if it doesn't exist"""
     try:
         session = db.query(GenerationSessionModel).filter(
             GenerationSessionModel.id == session_id
@@ -113,7 +187,7 @@ async def edit_subtopic_content(
         # Use specified subtopic or default to current
         target_subtopic_order = subtopic_order or session.current_subtopic
         
-        # Find the target subtopic to edit
+        # Find or create the target subtopic
         from app.models.notes import Subtopic
         target_subtopic = db.query(Subtopic).filter(
             Subtopic.topic_id == session.topic_id,
@@ -121,9 +195,22 @@ async def edit_subtopic_content(
         ).first()
         
         if not target_subtopic:
-            raise ValueError(f"Subtopic {target_subtopic_order} not found")
+            # Create empty subtopic if it doesn't exist
+            logger.info(f"Subtopic {target_subtopic_order} not found, creating it now")
+            
+            subtopic_title = session.subtopic_titles[target_subtopic_order - 1] if session.subtopic_titles and len(session.subtopic_titles) >= target_subtopic_order else request.title
+            
+            target_subtopic = Subtopic(
+                topic_id=session.topic_id,
+                order=target_subtopic_order,
+                title=subtopic_title,
+                content="",
+                is_published=False
+            )
+            db.add(target_subtopic)
+            db.flush()  # Get the ID without committing
         
-        # Update the target subtopic content directly
+        # Update the subtopic content
         target_subtopic.title = request.title
         target_subtopic.content = request.content
         
@@ -146,6 +233,7 @@ async def edit_subtopic_content(
             "message": "Subtopic content updated successfully",
             "subtopic_title": request.title,
             "content": request.content,
+            "order": target_subtopic_order,
             "edited_subtopic": target_subtopic_order,
             "total_subtopics": session.total_subtopics
         }
