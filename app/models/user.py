@@ -19,6 +19,7 @@ class User(Base):
     role = Column(Enum(UserRole), nullable=False, default=UserRole.student)
     is_active = Column(Boolean, default=True)
     refresh_token = Column(String, nullable=True)
+    is_verified =Column(String, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Define relationship without back_populates to avoid circular issues

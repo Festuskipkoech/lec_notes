@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.database import Base
 
 # Import your models
-from app.models.generation import GenerationSession, LangGraphCheckpoint, Conversation
+from app.models.generation import GenerationSession, LangGraphCheckpoint, ConversationMessage
 from app.models.user import User
 
 try:
