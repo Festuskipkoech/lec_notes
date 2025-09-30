@@ -14,11 +14,18 @@ class AuthService:
     
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
+        # Ensure hashed_password is a string, not bytes
+        if isinstance(hashed_password, bytes):
+            hashed_password = hashed_password.decode('utf-8')
         return pwd_context.verify(plain_password, hashed_password)
     
     @staticmethod
     def get_password_hash(password: str) -> str:
-        return pwd_context.hash(password)
+        hashed = pwd_context.hash(password)
+        # Ensure it returns a string, not bytes
+        if isinstance(hashed, bytes):
+            return hashed.decode('utf-8')
+        return hashed
     
     @staticmethod
     def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
