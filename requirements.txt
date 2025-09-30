@@ -7,8 +7,8 @@ pydantic
 pydantic_settings
 pydantic[email]
 python-jose[cryptography]
+bcrypt==4.0.1
 passlib[bcrypt]==1.7.4
-bcrypt==4.1.0
 python-multipart
 python-dotenv
 openai

@@ -8,20 +8,38 @@ from app.schemas.auth import TokenData
 from app.config import settings
 import secrets
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=12
+)
 
 class AuthService:
     
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
-        # Ensure hashed_password is a string, not bytes
-        if isinstance(hashed_password, bytes):
-            hashed_password = hashed_password.decode('utf-8')
-        return pwd_context.verify(plain_password, hashed_password)
+        try:
+            # Ensure hashed_password is a string, not bytes
+            if isinstance(hashed_password, bytes):
+                hashed_password = hashed_password.decode('utf-8')
+            
+            # Ensure plain_password is a string
+            if isinstance(plain_password, bytes):
+                plain_password = plain_password.decode('utf-8')
+                
+            return pwd_context.verify(plain_password, hashed_password)
+        except Exception as e:
+            print(f"Password verification error: {e}")
+            return False
     
     @staticmethod
     def get_password_hash(password: str) -> str:
+        # Ensure password is a string
+        if isinstance(password, bytes):
+            password = password.decode('utf-8')
+            
         hashed = pwd_context.hash(password)
+        
         # Ensure it returns a string, not bytes
         if isinstance(hashed, bytes):
             return hashed.decode('utf-8')
