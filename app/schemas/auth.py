@@ -31,6 +31,21 @@ class User(BaseModel):
     phone: Optional[str]
     role: UserRole
     is_active: bool
+    is_verified: bool
     
     class Config:
         from_attributes = True
+
+# Extra schemas for verification & reset
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class VerifyEmailResponse(BaseModel):
+    message: str
+
+class ResetPasswordResponse(BaseModel):
+    message: str

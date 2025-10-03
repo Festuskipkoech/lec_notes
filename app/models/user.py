@@ -3,6 +3,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
+from datetime import datetime
 
 class UserRole(str, enum.Enum):
     admin = "admin"
@@ -21,5 +22,13 @@ class User(Base):
     refresh_token = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Define relationship without back_populates to avoid circular issues
+    # Email verification fields
+    is_verified = Column(Boolean, default=False)
+    verification_token = Column(String, nullable=True, index=True)
+    verification_token_expires = Column(DateTime, nullable=True)
+
+    # Password reset fields
+    reset_token = Column(String, nullable=True, index=True)
+    reset_token_expires = Column(DateTime, nullable=True)
+    
     topics = relationship("Topic")
